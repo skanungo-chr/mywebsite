@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Models</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 40px 20px;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 2rem;
+      margin-bottom: 8px;
+      background: linear-gradient(135deg, #a78bfa, #60a5fa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .subtitle {
+      text-align: center;
+      color: #94a3b8;
+      margin-bottom: 40px;
+      font-size: 0.95rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 24px;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    .card {
+      background: #1e2130;
+      border: 1px solid #2d3348;
+      border-radius: 16px;
+      padding: 28px;
+      transition: transform 0.2s, border-color 0.2s;
+    }
+
+    .card:hover {
+      transform: translateY(-4px);
+      border-color: #4f46e5;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+
+    .icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.4rem;
+      flex-shrink: 0;
+    }
+
+    .icon-opus   { background: linear-gradient(135deg, #7c3aed, #4f46e5); }
+    .icon-sonnet { background: linear-gradient(135deg, #0ea5e9, #06b6d4); }
+    .icon-haiku  { background: linear-gradient(135deg, #10b981, #34d399); }
+
+    .card-title { font-size: 1.2rem; font-weight: 700; }
+    .card-version { font-size: 0.8rem; color: #64748b; margin-top: 2px; }
+
+    .model-id {
+      background: #0f1117;
+      border: 1px solid #2d3348;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-family: 'Cascadia Code', 'Consolas', monospace;
+      font-size: 0.82rem;
+      color: #a5b4fc;
+      word-break: break-all;
+      margin-bottom: 16px;
+      cursor: pointer;
+      position: relative;
+    }
+
+    .model-id::after {
+      content: 'click to copy';
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 0.7rem;
+      color: #4b5563;
+      font-family: sans-serif;
+    }
+
+    .model-id.copied { border-color: #10b981; color: #34d399; }
+    .model-id.copied::after { content: 'copied!'; color: #10b981; }
+
+    .tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .tag {
+      font-size: 0.75rem;
+      padding: 4px 10px;
+      border-radius: 20px;
+      background: #2d3348;
+      color: #94a3b8;
+    }
+
+    .description {
+      font-size: 0.88rem;
+      color: #94a3b8;
+      line-height: 1.6;
+    }
+
+    .badge {
+      display: inline-block;
+      font-size: 0.7rem;
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-weight: 600;
+      margin-left: 8px;
+    }
+
+    .badge-latest { background: #1a3a2a; color: #34d399; }
+    .badge-fast   { background: #1a2a3a; color: #60a5fa; }
+  </style>
+</head>
+<body>
+
+  <h1>Claude Models</h1>
+  <p class="subtitle">Anthropic's latest model family — Claude 4.5 / 4.6</p>
+
+  <div class="grid">
+
+    <!-- Opus -->
+    <div class="card">
+      <div class="card-header">
+        <div class="icon icon-opus">&#129504;</div>
+        <div>
+          <div class="card-title">Claude Opus 4.6 <span class="badge badge-latest">Latest</span></div>
+          <div class="card-version">Most capable model</div>
+        </div>
+      </div>
+      <div class="model-id" onclick="copyId(this)">claude-opus-4-6</div>
+      <div class="tags">
+        <span class="tag">Highest intelligence</span>
+        <span class="tag">Complex reasoning</span>
+        <span class="tag">Agentic tasks</span>
+      </div>
+      <p class="description">
+        Best-in-class performance for complex, multi-step tasks. Ideal for advanced reasoning,
+        nuanced writing, and long-context analysis where maximum capability is required.
+      </p>
+    </div>
+
+    <!-- Sonnet -->
+    <div class="card">
+      <div class="card-header">
+        <div class="icon icon-sonnet">&#128203;</div>
+        <div>
+          <div class="card-title">Claude Sonnet 4.6 <span class="badge badge-fast">Default</span></div>
+          <div class="card-version">Balanced performance</div>
+        </div>
+      </div>
+      <div class="model-id" onclick="copyId(this)">claude-sonnet-4-6</div>
+      <div class="tags">
+        <span class="tag">Balanced</span>
+        <span class="tag">Fast output</span>
+        <span class="tag">Recommended</span>
+      </div>
+      <p class="description">
+        The recommended default for most applications. Combines strong intelligence with
+        speed and cost-efficiency. Powers Claude Code and the Claude.ai interface.
+      </p>
+    </div>
+
+    <!-- Haiku -->
+    <div class="card">
+      <div class="card-header">
+        <div class="icon icon-haiku">&#9889;</div>
+        <div>
+          <div class="card-title">Claude Haiku 4.5</div>
+          <div class="card-version">Speed-optimized</div>
+        </div>
+      </div>
+      <div class="model-id" onclick="copyId(this)">claude-haiku-4-5-20251001</div>
+      <div class="tags">
+        <span class="tag">Ultra-fast</span>
+        <span class="tag">Low latency</span>
+        <span class="tag">Cost-efficient</span>
+      </div>
+      <p class="description">
+        Fastest and most compact model in the family. Best suited for real-time interactions,
+        high-throughput pipelines, and latency-sensitive applications.
+      </p>
+    </div>
+
+  </div>
+
+  <script>
+    function copyId(el) {
+      const text = el.textContent.replace('click to copy', '').replace('copied!', '').trim();
+      navigator.clipboard.writeText(text).then(() => {
+        el.classList.add('copied');
+        setTimeout(() => el.classList.remove('copied'), 1800);
+      });
+    }
+  </script>
+
+</body>
+</html>
