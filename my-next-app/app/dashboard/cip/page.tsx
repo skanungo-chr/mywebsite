@@ -305,7 +305,7 @@ export default function CIPPage() {
       {/* ── Status Donut Chart ── */}
       {!cipLoading && cipRecords.length > 0 && (
         <div className="mb-5">
-          <CIPStatusChart records={cipRecords} />
+          <CIPStatusChart records={filteredCIP} />
         </div>
       )}
 
