@@ -161,6 +161,17 @@ export default function CIPPage() {
     return mul * av.localeCompare(bv);
   });
 
+  // ── KPI computations ──────────────────────────────────────────────────────
+  const thisMonth = new Date().toISOString().slice(0, 7); // "YYYY-MM"
+  const kpi = {
+    total:      cipRecords.length,
+    approved:   cipRecords.filter((r) => r.cipStatus.toLowerCase() === "approved").length,
+    submitted:  cipRecords.filter((r) => r.cipStatus.toLowerCase() === "submitted").length,
+    draft:      cipRecords.filter((r) => r.cipStatus.toLowerCase() === "draft").length,
+    emergency:  cipRecords.filter((r) => r.emergencyFlag).length,
+    thisMonth:  cipRecords.filter((r) => r.submissionDate?.slice(0, 7) === thisMonth).length,
+  };
+
   const totalPages  = Math.max(1, Math.ceil(sortedCIP.length / pageSize));
   const safePage    = Math.min(page, totalPages);
   const pageStart   = (safePage - 1) * pageSize;
@@ -173,6 +184,97 @@ export default function CIPPage() {
 
   return (
     <div>
+      {/* ── KPI Cards ── */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
+        {[
+          {
+            label: "Total CIPs",
+            value: kpi.total,
+            icon: (
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+            ),
+            color: "text-indigo-400", bg: "bg-indigo-500/10", border: "border-indigo-500/20",
+            onClick: undefined,
+          },
+          {
+            label: "Approved",
+            value: kpi.approved,
+            icon: (
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            ),
+            color: "text-green-400", bg: "bg-green-500/10", border: "border-green-500/20",
+            onClick: () => { setFilterStatus(["Approved"]); setPage(1); },
+          },
+          {
+            label: "Submitted",
+            value: kpi.submitted,
+            icon: (
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            ),
+            color: "text-blue-400", bg: "bg-blue-500/10", border: "border-blue-500/20",
+            onClick: () => { setFilterStatus(["Submitted"]); setPage(1); },
+          },
+          {
+            label: "Draft",
+            value: kpi.draft,
+            icon: (
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487z" />
+              </svg>
+            ),
+            color: "text-yellow-400", bg: "bg-yellow-500/10", border: "border-yellow-500/20",
+            onClick: () => { setFilterStatus(["Draft"]); setPage(1); },
+          },
+          {
+            label: "Emergency",
+            value: kpi.emergency,
+            icon: (
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126z" />
+              </svg>
+            ),
+            color: "text-red-400", bg: "bg-red-500/10", border: "border-red-500/20",
+            onClick: () => { setFilterEmergency(true); setPage(1); },
+          },
+          {
+            label: "This Month",
+            value: kpi.thisMonth,
+            icon: (
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 9v7.5" />
+              </svg>
+            ),
+            color: "text-purple-400", bg: "bg-purple-500/10", border: "border-purple-500/20",
+            onClick: undefined,
+          },
+        ].map(({ label, value, icon, color, bg, border, onClick }) => (
+          <div
+            key={label}
+            onClick={onClick}
+            className={`relative rounded-xl border p-4 flex flex-col gap-2 transition-all ${bg} ${border} ${
+              onClick ? "cursor-pointer hover:brightness-125" : ""
+            } ${cipLoading ? "animate-pulse" : ""}`}
+          >
+            <div className={`${color} opacity-80`}>{icon}</div>
+            <div>
+              <p className="text-2xl font-bold text-white tabular-nums">
+                {cipLoading ? <span className="inline-block w-10 h-6 bg-gray-700 rounded" /> : value.toLocaleString()}
+              </p>
+              <p className="text-xs text-gray-500 mt-0.5 font-medium">{label}</p>
+            </div>
+            {onClick && value > 0 && (
+              <span className="absolute top-3 right-3 text-[10px] text-gray-600 hover:text-gray-400">filter →</span>
+            )}
+          </div>
+        ))}
+      </div>
+
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <FilterDropdown
