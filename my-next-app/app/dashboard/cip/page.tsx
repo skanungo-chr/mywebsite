@@ -5,6 +5,7 @@ import { useAuth } from "@/context/AuthContext";
 import { CIPRecord } from "@/lib/cip";
 import FilterDropdown from "@/components/FilterDropdown";
 import DateRangeFilter, { DateRange } from "@/components/DateRangeFilter";
+import CIPDetailModal from "@/components/CIPDetailModal";
 
 const STATUS_COLORS: Record<string, string> = {
   open:          "bg-blue-900/40 text-blue-300",
@@ -34,6 +35,7 @@ export default function CIPPage() {
   const [filterEmergency, setFilterEmergency] = useState(false);
   const [dateRange, setDateRange]       = useState<DateRange>({ from: "", to: "" });
   const [debugResult, setDebugResult]   = useState<string | null>(null);
+  const [selectedId, setSelectedId]     = useState<string | null>(null);
 
   // Sorting
   type SortKey = "chrTicketNumbers" | "cipType" | "cipStatus" | "submissionDate" | "emergencyFlag";
@@ -307,7 +309,11 @@ export default function CIPPage() {
               </thead>
               <tbody className="divide-y divide-gray-800">
                 {pageRecords.map((record, idx) => (
-                  <tr key={record.id} className="hover:bg-gray-900/60 transition-colors">
+                  <tr
+                    key={record.id}
+                    onClick={() => setSelectedId(record.id)}
+                    className="hover:bg-gray-900/60 transition-colors cursor-pointer"
+                  >
                     <td className="px-4 py-3 text-gray-600 tabular-nums">{pageStart + idx + 1}</td>
                     <td className="px-4 py-3 font-medium text-white">{record.chrTicketNumbers || "—"}</td>
                     <td className="px-4 py-3 text-gray-300">{record.cipType || "—"}</td>
@@ -398,6 +404,8 @@ export default function CIPPage() {
           )}
         </>
       )}
+
+      <CIPDetailModal cipId={selectedId} onClose={() => setSelectedId(null)} />
     </div>
   );
 }
