@@ -8,6 +8,7 @@ import {
   Legend,
   DoughnutController,
   type ChartData,
+  type ChartOptions,
   type TooltipItem,
 } from "chart.js";
 
@@ -34,7 +35,8 @@ function colorFor(status: string) {
 
 export default function CIPStatusChart({ records }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const chartRef  = useRef<Chart<"doughnut"> | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const chartRef  = useRef<Chart<any> | null>(null);
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -69,54 +71,56 @@ export default function CIPStatusChart({ records }: Props) {
       return;
     }
 
-    chartRef.current = new Chart(canvasRef.current, {
-      type: "doughnut",
-      data: chartData,
-      options: {
-        cutout: "70%",
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: {
-            position: "right",
-            labels: {
-              color: "#9ca3af",      // gray-400
-              font: { size: 12 },
-              padding: 12,
-              usePointStyle: true,
-              pointStyleWidth: 8,
-              generateLabels(chart) {
-                const ds = chart.data.datasets[0];
-                const total = (ds.data as number[]).reduce((a, b) => a + b, 0);
-                return (chart.data.labels as string[]).map((label, i) => ({
-                  text: `${label}  ${ds.data[i]}  (${Math.round(((ds.data[i] as number) / total) * 100)}%)`,
-                  fillStyle: (ds.backgroundColor as string[])[i],
-                  strokeStyle: (ds.borderColor as string[])[i],
-                  lineWidth: 1,
-                  hidden: false,
-                  index: i,
-                  pointStyle: "circle" as const,
-                }));
-              },
+    const options: ChartOptions<"doughnut"> = {
+      cutout: "70%",
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: "right",
+          labels: {
+            color: "#9ca3af",
+            font: { size: 12 },
+            padding: 12,
+            usePointStyle: true,
+            pointStyleWidth: 8,
+            generateLabels(chart) {
+              const ds = chart.data.datasets[0];
+              const total = (ds.data as number[]).reduce((a, b) => a + b, 0);
+              return (chart.data.labels as string[]).map((label, i) => ({
+                text: `${label}  ${ds.data[i]}  (${Math.round(((ds.data[i] as number) / total) * 100)}%)`,
+                fillStyle: (ds.backgroundColor as string[])[i],
+                strokeStyle: (ds.borderColor as string[])[i],
+                lineWidth: 1,
+                hidden: false,
+                index: i,
+                pointStyle: "circle" as const,
+              }));
             },
           },
-          tooltip: {
-            backgroundColor: "#1f2937",
-            borderColor: "#374151",
-            borderWidth: 1,
-            titleColor: "#f9fafb",
-            bodyColor: "#9ca3af",
-            padding: 10,
-            callbacks: {
-              label(ctx: TooltipItem<"doughnut">) {
-                const total = (ctx.dataset.data as number[]).reduce((a, b) => a + b, 0);
-                const pct   = Math.round(((ctx.parsed as number) / total) * 100);
-                return `  ${ctx.parsed.toLocaleString()} records · ${pct}%`;
-              },
+        },
+        tooltip: {
+          backgroundColor: "#1f2937",
+          borderColor: "#374151",
+          borderWidth: 1,
+          titleColor: "#f9fafb",
+          bodyColor: "#9ca3af",
+          padding: 10,
+          callbacks: {
+            label(ctx: TooltipItem<"doughnut">) {
+              const total = (ctx.dataset.data as number[]).reduce((a, b) => a + b, 0);
+              const pct   = Math.round(((ctx.parsed as number) / total) * 100);
+              return `  ${ctx.parsed.toLocaleString()} records · ${pct}%`;
             },
           },
         },
       },
+    };
+
+    chartRef.current = new Chart(canvasRef.current, {
+      type: "doughnut",
+      data: chartData,
+      options,
     });
 
     return () => {
