@@ -78,27 +78,27 @@ export async function fetchCIPRecords(
   const listId = await getListId(siteId, resolvedList, token);
 
   const data = await graphFetch(
-    `/sites/${siteId}/lists/${listId}/items?expand=fields(select=Title,CIPType,CIPStatus,SubmissionDate,Emergency)&$top=500`,
+    `/sites/${siteId}/lists/${listId}/items?expand=fields(select=CHR_x0020_Ticket_x0020_Number_x0,formStatus,CIPStatuss,Submission_x0020_Date,Emergency_x0020_Change_x0020__x0)&$filter=fields/ContentType ne 'Folder'&$top=500`,
     token
   ) as {
     value: {
       id: string;
       fields: {
-        Title?: string;
-        CIPType?: string;
-        CIPStatus?: string;
-        SubmissionDate?: string;
-        Emergency?: boolean;
+        CHR_x0020_Ticket_x0020_Number_x0?: string;
+        formStatus?: string;
+        CIPStatuss?: string;
+        Submission_x0020_Date?: string;
+        Emergency_x0020_Change_x0020__x0?: string;
       };
     }[];
   };
 
   return data.value.map((item) => ({
     id: item.id,
-    chrTicketNumbers: item.fields.Title ?? "",
-    cipType: item.fields.CIPType ?? "",
-    cipStatus: item.fields.CIPStatus ?? "",
-    submissionDate: item.fields.SubmissionDate ?? "",
-    emergencyFlag: item.fields.Emergency ?? false,
+    chrTicketNumbers: item.fields.CHR_x0020_Ticket_x0020_Number_x0 ?? "",
+    cipType: item.fields.formStatus ?? "",
+    cipStatus: item.fields.CIPStatuss ?? "",
+    submissionDate: item.fields.Submission_x0020_Date ?? "",
+    emergencyFlag: item.fields.Emergency_x0020_Change_x0020__x0 === "Yes",
   }));
 }
