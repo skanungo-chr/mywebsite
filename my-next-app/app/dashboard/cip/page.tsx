@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { CIPRecord } from "@/lib/cip";
-import { getCIPRecords } from "@/lib/firestore";
+import { subscribeCIPRecords } from "@/lib/firestore";
 import FilterDropdown from "@/components/FilterDropdown";
 import DateRangeFilter, { DateRange } from "@/components/DateRangeFilter";
 import CIPDetailModal from "@/components/CIPDetailModal";
@@ -52,7 +52,15 @@ export default function CIPPage() {
   const [page, setPage]           = useState(1);
   const [pageSize, setPageSize]   = useState(10);
 
-  useEffect(() => { fetchCIPRecords(); }, []);
+  // Real-time Firestore subscription — runs once on mount
+  useEffect(() => {
+    setCipLoading(true);
+    const unsub = subscribeCIPRecords(
+      (records) => { setCipRecords(records); setCipLoading(false); setCipError(""); },
+      (err)     => { setCipError(err.message); setCipLoading(false); }
+    );
+    return () => unsub();
+  }, []);
 
   const handleSort = (key: SortKey) => {
     if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -66,18 +74,8 @@ export default function CIPPage() {
   const authHeaders = (): Record<string, string> =>
     msAccessToken ? { Authorization: `Bearer ${msAccessToken}` } : {};
 
-  const fetchCIPRecords = async () => {
-    setCipLoading(true);
-    setCipError("");
-    try {
-      const records = await getCIPRecords();
-      setCipRecords(records);
-    } catch (err) {
-      setCipError(err instanceof Error ? err.message : "Failed to load CIP records");
-    } finally {
-      setCipLoading(false);
-    }
-  };
+  // Subscription keeps data live; this is called after sync/edit to clear errors
+  const fetchCIPRecords = () => { setCipError(""); };
 
   const handleSync = async () => {
     setSyncing(true);
@@ -345,10 +343,10 @@ export default function CIPPage() {
               {syncing ? "Syncing..." : "Sync from SharePoint"}
             </button>
           )}
-          <button onClick={fetchCIPRecords} disabled={cipLoading}
-            className="bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-sm px-4 py-2 rounded-lg transition-colors">
-            {cipLoading ? "Loading..." : "Refresh"}
-          </button>
+          <div className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-xs text-gray-400">
+            <span className={`w-1.5 h-1.5 rounded-full ${cipLoading ? "bg-yellow-400 animate-pulse" : "bg-green-400 animate-pulse"}`} />
+            {cipLoading ? "Connecting..." : "Live"}
+          </div>
           {isAdmin && (
             <button onClick={handleSeed} disabled={seeding}
               className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-xs px-3 py-2 rounded-lg transition-colors text-gray-400">

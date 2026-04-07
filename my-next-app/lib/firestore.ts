@@ -9,21 +9,34 @@ import {
   query,
   where,
   orderBy,
+  onSnapshot,
   serverTimestamp,
+  type Unsubscribe,
 } from "firebase/firestore";
 import { CIPRecord } from "@/lib/cip";
 
-export const getCIPRecords = async (): Promise<CIPRecord[]> => {
-  const snapshot = await getDocs(collection(db, "cip_records"));
-  return snapshot.docs.map((d) => ({
-    id: d.id,
-    chrTicketNumbers: d.data().chrTicketNumbers ?? "",
-    cipType:          d.data().cipType          ?? "",
-    cipStatus:        d.data().cipStatus         ?? "",
-    submissionDate:   d.data().submissionDate    ?? "",
-    emergencyFlag:    d.data().emergencyFlag      ?? false,
-  }));
-};
+function docToCIPRecord(d: { id: string; data: () => Record<string, unknown> }): CIPRecord {
+  const data = d.data();
+  return {
+    id:               d.id,
+    chrTicketNumbers: String(data.chrTicketNumbers ?? ""),
+    cipType:          String(data.cipType          ?? ""),
+    cipStatus:        String(data.cipStatus        ?? ""),
+    submissionDate:   String(data.submissionDate   ?? ""),
+    emergencyFlag:    Boolean(data.emergencyFlag),
+  };
+}
+
+export function subscribeCIPRecords(
+  onUpdate: (records: CIPRecord[]) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  return onSnapshot(
+    collection(db, "cip_records"),
+    (snapshot) => onUpdate(snapshot.docs.map(docToCIPRecord)),
+    (err) => onError?.(err)
+  );
+}
 
 export interface Note {
   id?: string;
