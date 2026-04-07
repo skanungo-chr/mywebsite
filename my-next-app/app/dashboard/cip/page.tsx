@@ -7,6 +7,7 @@ import { getCIPRecords } from "@/lib/firestore";
 import FilterDropdown from "@/components/FilterDropdown";
 import DateRangeFilter, { DateRange } from "@/components/DateRangeFilter";
 import CIPDetailModal from "@/components/CIPDetailModal";
+import CIPStatusChart from "@/components/CIPStatusChart";
 import CIPCreateModal from "@/components/CIPCreateModal";
 import CIPEditModal from "@/components/CIPEditModal";
 
@@ -274,6 +275,13 @@ export default function CIPPage() {
           </div>
         ))}
       </div>
+
+      {/* ── Status Donut Chart ── */}
+      {!cipLoading && cipRecords.length > 0 && (
+        <div className="mb-5">
+          <CIPStatusChart records={cipRecords} />
+        </div>
+      )}
 
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
