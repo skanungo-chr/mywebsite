@@ -62,6 +62,34 @@ export default function CIPPage() {
     return () => unsub();
   }, []);
 
+  const handleExportCSV = () => {
+    const headers = ["#", "CHR Ticket #", "CIP Type", "Status", "Submission Date", "Emergency"];
+    const rows = sortedCIP.map((r, i) => [
+      i + 1,
+      r.chrTicketNumbers,
+      r.cipType,
+      r.cipStatus,
+      r.submissionDate ? new Date(r.submissionDate).toLocaleDateString() : "",
+      r.emergencyFlag ? "Yes" : "No",
+    ]);
+
+    const escape = (v: string | number) => {
+      const s = String(v);
+      return s.includes(",") || s.includes('"') || s.includes("\n")
+        ? `"${s.replace(/"/g, '""')}"`
+        : s;
+    };
+
+    const csv = [headers, ...rows].map((row) => row.map(escape).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `cip-records-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const handleSort = (key: SortKey) => {
     if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else { setSortKey(key); setSortDir("asc"); }
@@ -343,6 +371,10 @@ export default function CIPPage() {
               {syncing ? "Syncing..." : "Sync from SharePoint"}
             </button>
           )}
+          <button onClick={handleExportCSV}
+            className="bg-emerald-700 hover:bg-emerald-600 text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+            Export CSV
+          </button>
           <div className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-xs text-gray-400">
             <span className={`w-1.5 h-1.5 rounded-full ${cipLoading ? "bg-yellow-400 animate-pulse" : "bg-green-400 animate-pulse"}`} />
             {cipLoading ? "Connecting..." : "Live"}
