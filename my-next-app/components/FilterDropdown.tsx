@@ -2,14 +2,26 @@
 
 import { useEffect, useRef, useState } from "react";
 
-interface Props {
+interface SingleProps {
+  multi?: false;
   label: string;
   options: { value: string; label: string; dot?: string }[];
   value: string;
   onChange: (value: string) => void;
 }
 
-export default function FilterDropdown({ label, options, value, onChange }: Props) {
+interface MultiProps {
+  multi: true;
+  label: string;
+  options: { value: string; label: string; dot?: string }[];
+  value: string[];
+  onChange: (value: string[]) => void;
+}
+
+type Props = SingleProps | MultiProps;
+
+export default function FilterDropdown(props: Props) {
+  const { label, options } = props;
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -21,9 +33,28 @@ export default function FilterDropdown({ label, options, value, onChange }: Prop
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  const selected = options.find((o) => o.value === value);
+  // ── Single-select helpers ──────────────────────────────────────────────────
+  const singleValue  = props.multi ? "" : props.value;
+  const singleSelect = (v: string) => {
+    if (!props.multi) { props.onChange(v); setOpen(false); }
+  };
 
-  const select = (v: string) => { onChange(v); setOpen(false); };
+  // ── Multi-select helpers ───────────────────────────────────────────────────
+  const multiValues = props.multi ? props.value : [];
+  const toggleMulti = (v: string) => {
+    if (!props.multi) return;
+    const next = multiValues.includes(v)
+      ? multiValues.filter((x) => x !== v)
+      : [...multiValues, v];
+    props.onChange(next);
+  };
+  const clearMulti = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (props.multi) props.onChange([]);
+  };
+
+  const isActive = props.multi ? multiValues.length > 0 : !!singleValue;
+  const selected  = !props.multi ? options.find((o) => o.value === singleValue) : null;
 
   return (
     <div ref={ref} className="relative">
@@ -32,15 +63,18 @@ export default function FilterDropdown({ label, options, value, onChange }: Prop
         className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm transition-colors ${
           open
             ? "bg-gray-700 border-gray-600 text-white"
+            : isActive
+            ? "bg-indigo-600/15 border-indigo-500/40 text-indigo-300 hover:border-indigo-400"
             : "bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-600 hover:text-white"
         }`}
       >
-        {selected ? (
+        {/* Single-select: show selected label */}
+        {!props.multi && selected ? (
           <>
             {selected.dot && <span className={`w-2 h-2 rounded-full shrink-0 ${selected.dot}`} />}
             <span className="font-medium">{selected.label}</span>
           </>
-        ) : (
+        ) : !props.multi ? (
           <>
             <svg className="w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round"
@@ -48,7 +82,32 @@ export default function FilterDropdown({ label, options, value, onChange }: Prop
             </svg>
             <span>{label}</span>
           </>
+        ) : (
+          /* Multi-select: show label + count badge */
+          <>
+            <svg className="w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round"
+                d="M12 3c2.755 0 5.455.232 8.083.678.533.09.917.556.917 1.096v1.044a2.25 2.25 0 01-.659 1.591l-5.432 5.432a2.25 2.25 0 00-.659 1.591v2.927a2.25 2.25 0 01-1.244 2.013L9.75 21v-6.568a2.25 2.25 0 00-.659-1.591L3.659 7.409A2.25 2.25 0 013 5.818V4.774c0-.54.384-1.006.917-1.096A48.32 48.32 0 0112 3z" />
+            </svg>
+            <span>{label}</span>
+            {multiValues.length > 0 && (
+              <>
+                <span className="bg-indigo-600 text-white text-xs font-bold px-1.5 py-0.5 rounded-full leading-none">
+                  {multiValues.length}
+                </span>
+                <span
+                  role="button"
+                  onClick={clearMulti}
+                  className="ml-0.5 text-indigo-300 hover:text-white transition-colors text-xs"
+                  title="Clear"
+                >
+                  ✕
+                </span>
+              </>
+            )}
+          </>
         )}
+
         <svg
           className={`w-3.5 h-3.5 text-gray-500 transition-transform ${open ? "rotate-180" : ""}`}
           fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
@@ -58,31 +117,77 @@ export default function FilterDropdown({ label, options, value, onChange }: Prop
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 mt-1.5 min-w-[180px] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl overflow-hidden z-30">
-          {/* "All" option */}
-          <button
-            onClick={() => select("")}
-            className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-sm transition-colors ${
-              !value ? "bg-indigo-600/20 text-indigo-300" : "text-gray-400 hover:bg-gray-800 hover:text-white"
-            }`}
-          >
-            <span className="w-2 h-2 rounded-full bg-gray-600 shrink-0" />
-            All {label}s
-            {!value && (
-              <svg className="w-3.5 h-3.5 ml-auto text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-              </svg>
-            )}
-          </button>
+        <div className="absolute top-full left-0 mt-1.5 min-w-[200px] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl overflow-hidden z-30">
 
-          {options.length > 0 && <div className="border-t border-gray-800" />}
+          {/* ── Single-select "All" option ── */}
+          {!props.multi && (
+            <>
+              <button
+                onClick={() => singleSelect("")}
+                className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-sm transition-colors ${
+                  !singleValue ? "bg-indigo-600/20 text-indigo-300" : "text-gray-400 hover:bg-gray-800 hover:text-white"
+                }`}
+              >
+                <span className="w-2 h-2 rounded-full bg-gray-600 shrink-0" />
+                All {label}s
+                {!singleValue && (
+                  <svg className="w-3.5 h-3.5 ml-auto text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                  </svg>
+                )}
+              </button>
+              {options.length > 0 && <div className="border-t border-gray-800" />}
+            </>
+          )}
 
+          {/* ── Multi-select: "Select all / Clear" header ── */}
+          {props.multi && options.length > 0 && (
+            <>
+              <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800">
+                <span className="text-xs text-gray-500">{multiValues.length} of {options.length} selected</span>
+                {multiValues.length > 0 && (
+                  <button onClick={clearMulti} className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">
+                    Clear all
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* ── Options ── */}
           {options.map((opt) => {
-            const active = value === opt.value;
+            if (props.multi) {
+              const checked = multiValues.includes(opt.value);
+              return (
+                <button
+                  key={opt.value}
+                  onClick={() => toggleMulti(opt.value)}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-sm transition-colors ${
+                    checked ? "bg-indigo-600/15 text-white" : "text-gray-300 hover:bg-gray-800 hover:text-white"
+                  }`}
+                >
+                  {/* Checkbox */}
+                  <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${
+                    checked ? "bg-indigo-600 border-indigo-500" : "border-gray-600 bg-gray-800"
+                  }`}>
+                    {checked && (
+                      <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                      </svg>
+                    )}
+                  </span>
+                  {opt.dot && <span className={`w-2 h-2 rounded-full shrink-0 ${opt.dot}`} />}
+                  <span className="truncate">{opt.label}</span>
+                </button>
+              );
+            }
+
+            // Single-select option
+            const active = singleValue === opt.value;
             return (
               <button
                 key={opt.value}
-                onClick={() => select(opt.value)}
+                onClick={() => singleSelect(opt.value)}
                 className={`w-full flex items-center gap-2.5 px-3 py-2.5 text-sm transition-colors ${
                   active ? "bg-indigo-600/20 text-white" : "text-gray-300 hover:bg-gray-800 hover:text-white"
                 }`}

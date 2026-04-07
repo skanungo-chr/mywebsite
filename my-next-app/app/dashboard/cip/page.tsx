@@ -29,7 +29,7 @@ export default function CIPPage() {
   const [syncing, setSyncing]           = useState(false);
   const [seeding, setSeeding]           = useState(false);
   const [lastSynced, setLastSynced]     = useState<string | null>(null);
-  const [filterStatus, setFilterStatus]       = useState("");
+  const [filterStatus, setFilterStatus]       = useState<string[]>([]);
   const [filterType, setFilterType]           = useState("");
   const [filterEmergency, setFilterEmergency] = useState(false);
   const [dateRange, setDateRange]       = useState<DateRange>({ from: "", to: "" });
@@ -134,7 +134,7 @@ export default function CIPPage() {
   const typeOptions = uniqueTypes.map((t) => ({ value: t, label: t }));
 
   const filteredCIP = cipRecords.filter((r) => {
-    const matchStatus    = filterStatus    ? r.cipStatus.toLowerCase() === filterStatus.toLowerCase() : true;
+    const matchStatus    = filterStatus.length > 0 ? filterStatus.some((s) => r.cipStatus.toLowerCase() === s.toLowerCase()) : true;
     const matchType      = filterType      ? r.cipType.toLowerCase()   === filterType.toLowerCase()   : true;
     const matchEmergency = filterEmergency ? r.emergencyFlag === true                                 : true;
     const recDate        = r.submissionDate ? r.submissionDate.slice(0, 10) : "";
@@ -171,6 +171,7 @@ export default function CIPPage() {
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <FilterDropdown
+          multi
           label="Status"
           options={statusOptions}
           value={filterStatus}
@@ -212,9 +213,9 @@ export default function CIPPage() {
         )}
 
         {/* Clear all filters */}
-        {(filterStatus || filterType || filterEmergency || dateRange.from || dateRange.to) && (
+        {(filterStatus.length > 0 || filterType || filterEmergency || dateRange.from || dateRange.to) && (
           <button
-            onClick={() => { setFilterStatus(""); setFilterType(""); setFilterEmergency(false); setDateRange({ from: "", to: "" }); }}
+            onClick={() => { setFilterStatus([]); setFilterType(""); setFilterEmergency(false); setDateRange({ from: "", to: "" }); }}
             className="text-xs text-gray-500 hover:text-red-400 transition-colors underline underline-offset-2"
           >
             Clear filters
