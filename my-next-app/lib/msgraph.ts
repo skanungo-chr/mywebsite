@@ -36,7 +36,11 @@ export async function graphFetch(
 ): Promise<unknown> {
   const token = tokenOrNull ?? (await getGraphToken());
 
-  const res = await fetch(`https://graph.microsoft.com/v1.0${endpoint}`, {
+  const url = endpoint.startsWith("https://")
+    ? endpoint
+    : `https://graph.microsoft.com/v1.0${endpoint}`;
+
+  const res = await fetch(url, {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/json",
