@@ -35,11 +35,22 @@ export default function CIPPage() {
   const [dateRange, setDateRange]       = useState<DateRange>({ from: "", to: "" });
   const [debugResult, setDebugResult]   = useState<string | null>(null);
 
+  // Sorting
+  type SortKey = "chrTicketNumbers" | "cipType" | "cipStatus" | "submissionDate" | "emergencyFlag";
+  const [sortKey, setSortKey]   = useState<SortKey>("submissionDate");
+  const [sortDir, setSortDir]   = useState<"asc" | "desc">("desc");
+
   // Pagination
   const [page, setPage]           = useState(1);
   const [pageSize, setPageSize]   = useState(10);
 
   useEffect(() => { fetchCIPRecords(); }, []);
+
+  const handleSort = (key: SortKey) => {
+    if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else { setSortKey(key); setSortDir("asc"); }
+    setPage(1);
+  };
 
   // Reset to page 1 whenever filters change
   useEffect(() => { setPage(1); }, [filterStatus, filterType, filterEmergency, dateRange]);
@@ -132,10 +143,23 @@ export default function CIPPage() {
     return matchStatus && matchType && matchEmergency && matchFrom && matchTo;
   });
 
-  const totalPages  = Math.max(1, Math.ceil(filteredCIP.length / pageSize));
+  const sortedCIP = [...filteredCIP].sort((a, b) => {
+    const mul = sortDir === "asc" ? 1 : -1;
+    if (sortKey === "submissionDate") {
+      return mul * (a.submissionDate < b.submissionDate ? -1 : a.submissionDate > b.submissionDate ? 1 : 0);
+    }
+    if (sortKey === "emergencyFlag") {
+      return mul * ((a.emergencyFlag ? 1 : 0) - (b.emergencyFlag ? 1 : 0));
+    }
+    const av = (a[sortKey] as string).toLowerCase();
+    const bv = (b[sortKey] as string).toLowerCase();
+    return mul * av.localeCompare(bv);
+  });
+
+  const totalPages  = Math.max(1, Math.ceil(sortedCIP.length / pageSize));
   const safePage    = Math.min(page, totalPages);
   const pageStart   = (safePage - 1) * pageSize;
-  const pageRecords = filteredCIP.slice(pageStart, pageStart + pageSize);
+  const pageRecords = sortedCIP.slice(pageStart, pageStart + pageSize);
 
   // Page numbers to show (max 5 around current)
   const pageNumbers = Array.from({ length: totalPages }, (_, i) => i + 1).filter(
@@ -253,13 +277,31 @@ export default function CIPPage() {
           <div className="overflow-x-auto rounded-xl border border-gray-800">
             <table className="w-full text-sm">
               <thead>
-                <tr className="bg-gray-900 text-gray-400 text-left">
-                  <th className="px-4 py-3 font-medium">#</th>
-                  <th className="px-4 py-3 font-medium">CHR Ticket #</th>
-                  <th className="px-4 py-3 font-medium">CIP Type</th>
-                  <th className="px-4 py-3 font-medium">Status</th>
-                  <th className="px-4 py-3 font-medium">Submission Date</th>
-                  <th className="px-4 py-3 font-medium">Emergency</th>
+                <tr className="bg-gray-900 text-gray-400 text-left select-none">
+                  <th className="px-4 py-3 font-medium w-12">#</th>
+                  {(
+                    [
+                      { key: "chrTicketNumbers", label: "CHR Ticket #" },
+                      { key: "cipType",          label: "CIP Type"     },
+                      { key: "cipStatus",        label: "Status"       },
+                      { key: "submissionDate",   label: "Submission Date" },
+                      { key: "emergencyFlag",    label: "Emergency"    },
+                    ] as { key: SortKey; label: string }[]
+                  ).map(({ key, label }) => (
+                    <th
+                      key={key}
+                      onClick={() => handleSort(key)}
+                      className="px-4 py-3 font-medium cursor-pointer hover:text-white transition-colors group"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        {label}
+                        <span className="flex flex-col gap-px opacity-40 group-hover:opacity-70">
+                          <svg className={`w-2.5 h-2.5 transition-opacity ${sortKey === key && sortDir === "asc" ? "opacity-100 text-indigo-400" : ""}`} viewBox="0 0 10 6" fill="currentColor"><path d="M5 0L10 6H0z"/></svg>
+                          <svg className={`w-2.5 h-2.5 transition-opacity ${sortKey === key && sortDir === "desc" ? "opacity-100 text-indigo-400" : ""}`} viewBox="0 0 10 6" fill="currentColor"><path d="M5 6L0 0H10z"/></svg>
+                        </span>
+                      </span>
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-800">
@@ -293,8 +335,8 @@ export default function CIPPage() {
             {/* Footer: count + page-size picker */}
             <div className="flex items-center justify-between px-4 py-2.5 bg-gray-900 border-t border-gray-800">
               <span className="text-xs text-gray-500">
-                {filteredCIP.length} record{filteredCIP.length !== 1 ? "s" : ""}
-                {filteredCIP.length !== cipRecords.length && ` (filtered from ${cipRecords.length})`}
+                {sortedCIP.length} record{sortedCIP.length !== 1 ? "s" : ""}
+                {sortedCIP.length !== cipRecords.length && ` (filtered from ${cipRecords.length})`}
                 {msAccessToken ? " · Delegated access" : ""}
               </span>
               <div className="flex items-center gap-2 text-xs text-gray-400">
