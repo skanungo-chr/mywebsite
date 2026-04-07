@@ -37,8 +37,10 @@ service cloud.firestore {
     // Writes are open because seed/sync run server-side via the Firebase client SDK,
     // which has no request.auth context. Admin enforcement is done at the API/UI layer.
     // To lock this down properly, migrate seed/sync to Firebase Admin SDK.
+    // CIP records — reads open so server-side sync (unauthenticated) can diff records.
+    // Writes open for same reason. Access control enforced at API/UI layer.
     match /cip_records/{recordId} {
-      allow read:  if isSignedIn();
+      allow read:  if true;
       allow write: if true;
     }
   }
