@@ -8,6 +8,7 @@ import FilterDropdown from "@/components/FilterDropdown";
 import DateRangeFilter, { DateRange } from "@/components/DateRangeFilter";
 import CIPDetailModal from "@/components/CIPDetailModal";
 import CIPCreateModal from "@/components/CIPCreateModal";
+import CIPEditModal from "@/components/CIPEditModal";
 
 const STATUS_COLORS: Record<string, string> = {
   open:          "bg-blue-900/40 text-blue-300",
@@ -39,6 +40,7 @@ export default function CIPPage() {
   const [debugResult, setDebugResult]   = useState<string | null>(null);
   const [selectedId, setSelectedId]     = useState<string | null>(null);
   const [createOpen, setCreateOpen]     = useState(false);
+  const [editId, setEditId]             = useState<string | null>(null);
 
   // Sorting
   type SortKey = "chrTicketNumbers" | "cipType" | "cipStatus" | "submissionDate" | "emergencyFlag";
@@ -415,11 +417,22 @@ export default function CIPPage() {
         </>
       )}
 
-      <CIPDetailModal cipId={selectedId} onClose={() => setSelectedId(null)} />
+      <CIPDetailModal
+        cipId={selectedId}
+        onClose={() => setSelectedId(null)}
+        isAdmin={isAdmin}
+        onEdit={(id) => { setSelectedId(null); setEditId(id); }}
+      />
       <CIPCreateModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         onCreated={() => { setCreateOpen(false); handleSync(); }}
+        msAccessToken={msAccessToken}
+      />
+      <CIPEditModal
+        cipId={editId}
+        onClose={() => setEditId(null)}
+        onSaved={() => { setEditId(null); fetchCIPRecords(); }}
         msAccessToken={msAccessToken}
       />
     </div>

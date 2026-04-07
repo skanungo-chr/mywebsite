@@ -155,3 +155,76 @@ export async function GET(
     return NextResponse.json({ success: false, error: message }, { status: 500 });
   }
 }
+
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const authHeader = request.headers.get("Authorization");
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+
+  try {
+    const body = await request.json();
+
+    const siteData = await graphFetch(
+      `/sites/${SHAREPOINT_HOST}:${SITE_PATH}:`, token
+    ) as { id: string };
+
+    const listName = process.env.SHAREPOINT_LIST_NAME ?? "Change Implementation Plan";
+    const listsData = await graphFetch(`/sites/${siteData.id}/lists`, token) as {
+      value: { displayName: string; id: string }[];
+    };
+    const list = listsData.value.find(
+      (l) => l.displayName.toLowerCase() === listName.toLowerCase()
+    );
+    if (!list) throw new Error("CIP list not found");
+
+    const fields: Record<string, string> = {};
+    const map: Record<string, string> = {
+      changeName:                     "Title",
+      clientName:                     "Change_x0020_Name",
+      chrTicketNumbers:               "CHR_x0020_Ticket_x0020_Number_x0",
+      clientTicketNumbers:            "Client_x0020_Ticket_x0020_Number",
+      cipType:                        "formStatus",
+      purposeOfChange:                "Purpose_x0020_of_x0020_Change",
+      additionalDetails:              "Additional_x0020_Details",
+      submissionDate:                 "Submission_x0020_Date",
+      scheduledDate:                  "Scheduled_x0020_Date_x0020_and_x",
+      outageRequired:                 "Outage_x0020_Required_x003f_",
+      outageDuration:                 "Outage_x0020_Duration",
+      applicationsImpacted:           "Application_x0028_s_x0029__x0020",
+      environmentsImpacted:           "Environment_x0028_s_x0029__x0020",
+      domainsImpacted:                "Domain_x0028_s_x0029__x0020_Impa",
+      serversImpacted:                "Server_x0028_s_x0029__x0020_Impa",
+      submittedBy:                    "Submitted_x0020_By",
+      chrContacts:                    "CHR_x0020_Contacts",
+      clientContactName:              "Client_x0020_Contact_x0020_Name",
+      clientContactPhone:             "Client_x0020_Contact_x0020_Telep",
+      clientContactEmail:             "Client_x0020_Contact_x0020_Email",
+      stepsForImplementing:           "Steps_x0020_for_x0020_Implementi",
+      stepsForVerifying:              "Steps_x0020_for_x0020_Verifying_",
+      stepsForRollingBack:            "Steps_x0020_for_x0020_Rolling_x0",
+      preImplementationNotification:  "Pre_x002d_Implementation_x0020_N",
+      postImplementationNotification: "Post_x0020_Implementation_x0020_",
+    };
+
+    for (const [key, spField] of Object.entries(map)) {
+      if (body[key] !== undefined) fields[spField] = String(body[key]);
+    }
+    if (body.emergencyFlag !== undefined) {
+      fields["Emergency_x0020_Change_x0020__x0"] = body.emergencyFlag ? "Yes" : "No";
+    }
+
+    await graphFetch(
+      `/sites/${siteData.id}/lists/${list.id}/items/${id}/fields`,
+      token,
+      { method: "PATCH", body: JSON.stringify(fields) }
+    );
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    return NextResponse.json({ success: false, error: message }, { status: 500 });
+  }
+}

@@ -6,6 +6,8 @@ import { CIPDetail } from "@/app/api/cip/[id]/route";
 interface Props {
   cipId: string | null;
   onClose: () => void;
+  onEdit?: (id: string) => void;
+  isAdmin?: boolean;
 }
 
 const STATUS_STYLES: Record<string, { bg: string; text: string; border: string; dot: string }> = {
@@ -58,7 +60,7 @@ function Section({ title, icon, children }: { title: string; icon: React.ReactNo
   );
 }
 
-export default function CIPDetailModal({ cipId, onClose }: Props) {
+export default function CIPDetailModal({ cipId, onClose, onEdit, isAdmin }: Props) {
   const [detail, setDetail]   = useState<CIPDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState("");
@@ -252,9 +254,20 @@ export default function CIPDetailModal({ cipId, onClose }: Props) {
         {detail && (
           <div className="px-6 py-3.5 border-t border-gray-800 flex items-center justify-between">
             <span className="text-xs text-gray-600">ID: {detail.id}</span>
-            <button onClick={onClose} className="px-4 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white rounded-lg transition-colors">
-              Close
-            </button>
+            <div className="flex items-center gap-2">
+              {isAdmin && onEdit && (
+                <button onClick={() => onEdit(detail.id)}
+                  className="flex items-center gap-1.5 px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors">
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z" />
+                  </svg>
+                  Edit
+                </button>
+              )}
+              <button onClick={onClose} className="px-4 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white rounded-lg transition-colors">
+                Close
+              </button>
+            </div>
           </div>
         )}
       </div>
