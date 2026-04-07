@@ -15,15 +15,11 @@ interface SharePointList {
 export async function GET(request: Request) {
   const authHeader = request.headers.get("Authorization");
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  // Falls back to app-only if no user token provided
 
-  if (!token) {
-    return NextResponse.json(
-      { success: false, error: "Sign in with Microsoft 365 first. This endpoint requires a delegated user token." },
-      { status: 401 }
-    );
-  }
-
-  const steps: Record<string, unknown> = {};
+  const steps: Record<string, unknown> = {
+    accessMode: token ? "delegated" : "app-only",
+  };
 
   try {
     let site: SharePointSite | undefined;
@@ -72,15 +68,16 @@ export async function GET(request: Request) {
       return NextResponse.json({
         success: false,
         steps,
-        error: "Could not access SharePoint site. Make sure Sites.Read.All delegated permission is consented.",
+        error: "Could not access SharePoint site. Make sure Sites.Read.All Application permission is granted and admin consent given.",
       }, { status: 403 });
     }
 
     steps.site = { id: site.id, name: site.displayName, url: site.webUrl };
 
-    // List all lists on the site
+    // List ALL lists on the site (no filtering)
     const lists = await graphFetch(`/sites/${site.id}/lists`, token) as { value: SharePointList[] };
-    steps.lists = lists.value.map((l) => ({ name: l.displayName, id: l.id }));
+    steps.allLists = lists.value.map((l) => ({ name: l.displayName, id: l.id }));
+    steps.listCount = lists.value.length;
 
     return NextResponse.json({ success: true, steps });
   } catch (error) {
