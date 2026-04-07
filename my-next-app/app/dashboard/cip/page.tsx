@@ -29,8 +29,9 @@ export default function CIPPage() {
   const [syncing, setSyncing]           = useState(false);
   const [seeding, setSeeding]           = useState(false);
   const [lastSynced, setLastSynced]     = useState<string | null>(null);
-  const [filterStatus, setFilterStatus] = useState("");
-  const [filterType, setFilterType]     = useState("");
+  const [filterStatus, setFilterStatus]       = useState("");
+  const [filterType, setFilterType]           = useState("");
+  const [filterEmergency, setFilterEmergency] = useState(false);
   const [dateRange, setDateRange]       = useState<DateRange>({ from: "", to: "" });
   const [debugResult, setDebugResult]   = useState<string | null>(null);
 
@@ -41,7 +42,7 @@ export default function CIPPage() {
   useEffect(() => { fetchCIPRecords(); }, []);
 
   // Reset to page 1 whenever filters change
-  useEffect(() => { setPage(1); }, [filterStatus, filterType, dateRange]);
+  useEffect(() => { setPage(1); }, [filterStatus, filterType, filterEmergency, dateRange]);
 
   const authHeaders = (): Record<string, string> =>
     msAccessToken ? { Authorization: `Bearer ${msAccessToken}` } : {};
@@ -122,12 +123,13 @@ export default function CIPPage() {
   const typeOptions = uniqueTypes.map((t) => ({ value: t, label: t }));
 
   const filteredCIP = cipRecords.filter((r) => {
-    const matchStatus = filterStatus ? r.cipStatus.toLowerCase() === filterStatus.toLowerCase() : true;
-    const matchType   = filterType   ? r.cipType.toLowerCase()   === filterType.toLowerCase()   : true;
-    const recDate     = r.submissionDate ? r.submissionDate.slice(0, 10) : "";
-    const matchFrom   = dateRange.from ? recDate >= dateRange.from : true;
-    const matchTo     = dateRange.to   ? recDate <= dateRange.to   : true;
-    return matchStatus && matchType && matchFrom && matchTo;
+    const matchStatus    = filterStatus    ? r.cipStatus.toLowerCase() === filterStatus.toLowerCase() : true;
+    const matchType      = filterType      ? r.cipType.toLowerCase()   === filterType.toLowerCase()   : true;
+    const matchEmergency = filterEmergency ? r.emergencyFlag === true                                 : true;
+    const recDate        = r.submissionDate ? r.submissionDate.slice(0, 10) : "";
+    const matchFrom      = dateRange.from  ? recDate >= dateRange.from : true;
+    const matchTo        = dateRange.to    ? recDate <= dateRange.to   : true;
+    return matchStatus && matchType && matchEmergency && matchFrom && matchTo;
   });
 
   const totalPages  = Math.max(1, Math.ceil(filteredCIP.length / pageSize));
@@ -160,6 +162,18 @@ export default function CIPPage() {
 
         <DateRangeFilter value={dateRange} onChange={setDateRange} />
 
+        <button
+          onClick={() => setFilterEmergency((v) => !v)}
+          className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm transition-colors ${
+            filterEmergency
+              ? "bg-red-600/20 border-red-500/50 text-red-400"
+              : "bg-gray-800 border-gray-700 text-gray-300 hover:border-gray-600 hover:text-white"
+          }`}
+        >
+          <span className={`w-2 h-2 rounded-full ${filterEmergency ? "bg-red-400" : "bg-gray-500"}`} />
+          Emergency
+        </button>
+
         {/* Live result count */}
         {cipRecords.length > 0 && (
           <span className={`text-xs font-medium px-2.5 py-1.5 rounded-lg border transition-colors ${
@@ -174,9 +188,9 @@ export default function CIPPage() {
         )}
 
         {/* Clear all filters */}
-        {(filterStatus || filterType || dateRange.from || dateRange.to) && (
+        {(filterStatus || filterType || filterEmergency || dateRange.from || dateRange.to) && (
           <button
-            onClick={() => { setFilterStatus(""); setFilterType(""); setDateRange({ from: "", to: "" }); }}
+            onClick={() => { setFilterStatus(""); setFilterType(""); setFilterEmergency(false); setDateRange({ from: "", to: "" }); }}
             className="text-xs text-gray-500 hover:text-red-400 transition-colors underline underline-offset-2"
           >
             Clear filters
@@ -245,6 +259,7 @@ export default function CIPPage() {
                   <th className="px-4 py-3 font-medium">CIP Type</th>
                   <th className="px-4 py-3 font-medium">Status</th>
                   <th className="px-4 py-3 font-medium">Submission Date</th>
+                  <th className="px-4 py-3 font-medium">Emergency</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-800">
@@ -262,6 +277,13 @@ export default function CIPPage() {
                     </td>
                     <td className="px-4 py-3 text-gray-400">
                       {record.submissionDate ? new Date(record.submissionDate).toLocaleDateString() : "—"}
+                    </td>
+                    <td className="px-4 py-3">
+                      {record.emergencyFlag ? (
+                        <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-red-900/40 text-red-400">Yes</span>
+                      ) : (
+                        <span className="text-xs text-gray-600">—</span>
+                      )}
                     </td>
                   </tr>
                 ))}

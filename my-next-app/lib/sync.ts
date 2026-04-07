@@ -53,6 +53,7 @@ export async function syncCIPRecordsToFirestore(
           cipType: record.cipType,
           cipStatus: record.cipStatus,
           submissionDate: record.submissionDate,
+          emergencyFlag: record.emergencyFlag,
           lastSyncedAt: serverTimestamp(),
         },
         { merge: true }

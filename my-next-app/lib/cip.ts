@@ -20,6 +20,7 @@ export interface CIPRecord {
   cipType: string;
   cipStatus: string;
   submissionDate: string;
+  emergencyFlag: boolean;
 }
 
 async function getSiteId(token?: string | null): Promise<string> {
@@ -77,7 +78,7 @@ export async function fetchCIPRecords(
   const listId = await getListId(siteId, resolvedList, token);
 
   const data = await graphFetch(
-    `/sites/${siteId}/lists/${listId}/items?expand=fields(select=Title,CIPType,CIPStatus,SubmissionDate)&$top=500`,
+    `/sites/${siteId}/lists/${listId}/items?expand=fields(select=Title,CIPType,CIPStatus,SubmissionDate,Emergency)&$top=500`,
     token
   ) as {
     value: {
@@ -87,6 +88,7 @@ export async function fetchCIPRecords(
         CIPType?: string;
         CIPStatus?: string;
         SubmissionDate?: string;
+        Emergency?: boolean;
       };
     }[];
   };
@@ -97,5 +99,6 @@ export async function fetchCIPRecords(
     cipType: item.fields.CIPType ?? "",
     cipStatus: item.fields.CIPStatus ?? "",
     submissionDate: item.fields.SubmissionDate ?? "",
+    emergencyFlag: item.fields.Emergency ?? false,
   }));
 }
