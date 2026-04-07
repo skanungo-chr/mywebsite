@@ -32,7 +32,8 @@ export async function getGraphToken(): Promise<string> {
 // Graph fetch — uses delegated user token if provided, else falls back to app-only
 export async function graphFetch(
   endpoint: string,
-  tokenOrNull?: string | null
+  tokenOrNull?: string | null,
+  options?: { method?: string; body?: string }
 ): Promise<unknown> {
   const token = tokenOrNull ?? (await getGraphToken());
 
@@ -41,10 +42,13 @@ export async function graphFetch(
     : `https://graph.microsoft.com/v1.0${endpoint}`;
 
   const res = await fetch(url, {
+    method: options?.method ?? "GET",
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/json",
+      ...(options?.body ? { "Content-Type": "application/json" } : {}),
     },
+    ...(options?.body ? { body: options.body } : {}),
   });
 
   if (!res.ok) {
