@@ -11,6 +11,19 @@ import {
   orderBy,
   serverTimestamp,
 } from "firebase/firestore";
+import { CIPRecord } from "@/lib/cip";
+
+export const getCIPRecords = async (): Promise<CIPRecord[]> => {
+  const snapshot = await getDocs(collection(db, "cip_records"));
+  return snapshot.docs.map((d) => ({
+    id: d.id,
+    chrTicketNumbers: d.data().chrTicketNumbers ?? "",
+    cipType:          d.data().cipType          ?? "",
+    cipStatus:        d.data().cipStatus         ?? "",
+    submissionDate:   d.data().submissionDate    ?? "",
+    emergencyFlag:    d.data().emergencyFlag      ?? false,
+  }));
+};
 
 export interface Note {
   id?: string;

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { CIPRecord } from "@/lib/cip";
+import { getCIPRecords } from "@/lib/firestore";
 import FilterDropdown from "@/components/FilterDropdown";
 import DateRangeFilter, { DateRange } from "@/components/DateRangeFilter";
 import CIPDetailModal from "@/components/CIPDetailModal";
@@ -64,10 +65,8 @@ export default function CIPPage() {
     setCipLoading(true);
     setCipError("");
     try {
-      const res  = await fetch("/api/cip", { headers: authHeaders() });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error);
-      setCipRecords(data.records);
+      const records = await getCIPRecords();
+      setCipRecords(records);
     } catch (err) {
       setCipError(err instanceof Error ? err.message : "Failed to load CIP records");
     } finally {
