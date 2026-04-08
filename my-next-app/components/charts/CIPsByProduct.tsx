@@ -2,28 +2,66 @@
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 
 const PRODUCT_COLORS: Record<string, string> = {
-  "omnia":                    "#6366F1",
-  "omnia360":                 "#8B5CF6",
-  "oasis fm":                 "#06B6D4",
-  "advanced customer portal": "#F59E0B",
-  "payment processor":        "#EF4444",
-  "report writer":            "#10B981",
+  "OMNIA":                    "#6366F1",
+  "Omnia360":                 "#8B5CF6",
+  "OASIS FM":                 "#06B6D4",
+  "Advanced Customer Portal": "#F59E0B",
+  "Payment Processor":        "#EF4444",
+  "Report Writer":            "#10B981",
+  "General Software":         "#3B82F6",
+  "Data Warehouse":           "#F97316",
+  "XML Invoice":              "#EC4899",
+  "Other":                    "#6B7280",
 };
 
+const NORMALIZE: Record<string, string> = {
+  "omnia":                     "OMNIA",
+  "omnia360":                  "Omnia360",
+  "oasis":                     "OASIS FM",
+  "oasis fm":                  "OASIS FM",
+  "advanced customer portal":  "Advanced Customer Portal",
+  "acp":                       "Advanced Customer Portal",
+  "payment processor":         "Payment Processor",
+  "payment":                   "Payment Processor",
+  "report writer":              "Report Writer",
+  "general software":          "General Software",
+  "data warehouse":            "Data Warehouse",
+  "xml invoice":               "XML Invoice",
+};
+
+function normalizeProduct(raw: unknown): string {
+  if (!raw || String(raw).trim() === "") return "Other";
+  const trimmed = String(raw).trim();
+  // exact match first
+  if (PRODUCT_COLORS[trimmed]) return trimmed;
+  // case-insensitive normalize
+  return NORMALIZE[trimmed.toLowerCase()] ?? trimmed;
+}
+
 function colorFor(name: string): string {
-  return PRODUCT_COLORS[name.toLowerCase()] ?? "#6B7280";
+  return PRODUCT_COLORS[name] ?? "#6B7280";
+}
+
+interface CIPLike {
+  product?: unknown;
+  Product?: unknown;
+  cipType?: unknown;
+  formStatus?: unknown;
+  [key: string]: unknown;
 }
 
 interface DataPoint { name: string; value: number; color?: string; }
-interface Props { data?: DataPoint[]; records?: { product: string }[]; }
+interface Props { data?: DataPoint[]; records?: CIPLike[]; }
 
 function buildData(props: Props): DataPoint[] {
   if (props.data && props.data.length > 0) return props.data;
-  if (props.records) {
+  if (props.records && props.records.length > 0) {
     const counts: Record<string, number> = {};
     for (const r of props.records) {
-      const key = r.product?.trim() || "Other";
-      counts[key] = (counts[key] ?? 0) + 1;
+      // Try every possible field name
+      const raw = r.product ?? r.Product ?? r["product"] ?? r["Product"] ?? "";
+      const name = normalizeProduct(raw);
+      counts[name] = (counts[name] ?? 0) + 1;
     }
     return Object.entries(counts)
       .sort((a, b) => b[1] - a[1])
@@ -36,13 +74,15 @@ function buildData(props: Props): DataPoint[] {
 export default function CIPsByProduct(props: Props) {
   const data = buildData(props);
   const total = data.reduce((s, d) => s + d.value, 0);
+  const allOther = data.length === 1 && data[0].name === "Other";
 
   if (!data.length) {
     return (
       <div className="bg-[#111827] rounded-2xl p-5 border border-gray-800">
         <div className="h-4 w-36 bg-gray-700 rounded animate-pulse mb-4" />
-        <div className="h-[320px] flex items-center justify-center text-gray-600 text-sm">
-          No data available
+        <div className="h-[320px] flex flex-col items-center justify-center gap-2 text-gray-600 text-sm">
+          <span>No product data found</span>
+          <span className="text-xs text-gray-700">Check SharePoint sync is mapping Product field</span>
         </div>
       </div>
     );
@@ -57,6 +97,12 @@ export default function CIPsByProduct(props: Props) {
         </span>
       </div>
 
+      {allOther && (
+        <div className="mb-2 px-3 py-2 rounded-lg bg-yellow-900/20 border border-yellow-800/40 text-xs text-yellow-400">
+          ⚠️ Product field is empty — run Sync from SharePoint to populate product data.
+        </div>
+      )}
+
       {/* Donut + center label */}
       <div className="relative" style={{ height: 260 }}>
         <ResponsiveContainer width="100%" height={260}>
@@ -65,8 +111,8 @@ export default function CIPsByProduct(props: Props) {
               data={data}
               cx="50%"
               cy="50%"
-              innerRadius={70}
-              outerRadius={110}
+              innerRadius={80}
+              outerRadius={130}
               dataKey="value"
               paddingAngle={2}
               strokeWidth={0}
@@ -95,17 +141,13 @@ export default function CIPsByProduct(props: Props) {
         </div>
       </div>
 
-      {/* Legend */}
-      <div className="flex flex-wrap justify-center gap-x-4 gap-y-2 mt-2 px-2">
+      {/* Legend — 2 column grid */}
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 mt-3 px-1">
         {data.map((d) => (
-          <div key={d.name} className="flex items-center gap-1.5">
-            <span
-              className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-              style={{ background: d.color ?? colorFor(d.name) }}
-            />
-            <span className="text-xs text-gray-400">
-              {d.name}{" "}
-              <span className="text-gray-500">({d.value.toLocaleString()})</span>
+          <div key={d.name} className="flex items-center gap-1.5 min-w-0">
+            <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: d.color ?? colorFor(d.name) }} />
+            <span className="text-xs text-gray-400 truncate">
+              {d.name} <span className="text-gray-500">({d.value.toLocaleString()})</span>
             </span>
           </div>
         ))}
