@@ -109,15 +109,27 @@ export default function CIPPage() {
   const handleSync = async () => {
     setSyncing(true);
     setCipError("");
+    let totalSynced = 0;
+    let nextLink: string | null = null;
+    let page = 0;
     try {
-      const res  = await fetch("/api/sync", { method: "POST", headers: { "Content-Type": "application/json", ...authHeaders() } });
-      const text = await res.text();
-      let data: Record<string, unknown>;
-      try { data = JSON.parse(text); }
-      catch { throw new Error(res.status === 504 ? "Sync timed out — try again or use a smaller date range" : `Server error (${res.status})`); }
-      if (!data.success && !data.synced) throw new Error(data.error as string);
+      do {
+        page++;
+        const res = await fetch("/api/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders() },
+          body: JSON.stringify({ nextLink }),
+        });
+        const text = await res.text();
+        let data: Record<string, unknown>;
+        try { data = JSON.parse(text); }
+        catch { throw new Error(res.status === 504 ? `Sync timed out on page ${page}` : `Server error (${res.status})`); }
+        if (!data.success) throw new Error(data.error as string);
+        totalSynced += (data.synced as number) ?? 0;
+        nextLink = (data.nextLink as string) ?? null;
+      } while (nextLink);
+
       setLastSynced(new Date().toLocaleTimeString());
-      await fetchCIPRecords();
     } catch (err) {
       setCipError(err instanceof Error ? err.message : "Sync failed");
     } finally {

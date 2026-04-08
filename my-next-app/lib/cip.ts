@@ -69,43 +69,23 @@ async function getListId(siteId: string, listName: string, token?: string | null
   return list.id;
 }
 
-export async function fetchCIPRecords(
-  listName?: string | null,
-  userToken?: string | null
-): Promise<CIPRecord[]> {
-  const resolvedList = listName ?? process.env.SHAREPOINT_LIST_NAME ?? "CIP";
-  const token = userToken ?? undefined;
+const FIELDS_SELECT = "CHR_x0020_Ticket_x0020_Number_x0,formStatus,CIPStatuss,Submission_x0020_Date,Emergency_x0020_Change_x0020__x0,Change_x0020_Name,Product";
 
-  const siteId = await getSiteId(token);
-  const listId = await getListId(siteId, resolvedList, token);
-
-  type ItemPage = {
-    value: {
-      id: string;
-      fields: {
-        CHR_x0020_Ticket_x0020_Number_x0?: string;
-        formStatus?: string;
-        CIPStatuss?: string;
-        Submission_x0020_Date?: string;
-        Emergency_x0020_Change_x0020__x0?: string;
-        Change_x0020_Name?: string;
-        Product?: string;
-      };
-    }[];
-    "@odata.nextLink"?: string;
+type SPItem = {
+  id: string;
+  fields: {
+    CHR_x0020_Ticket_x0020_Number_x0?: string;
+    formStatus?: string;
+    CIPStatuss?: string;
+    Submission_x0020_Date?: string;
+    Emergency_x0020_Change_x0020__x0?: string;
+    Change_x0020_Name?: string;
+    Product?: string;
   };
+};
 
-  const allItems: ItemPage["value"] = [];
-  let nextUrl: string | undefined =
-    `/sites/${siteId}/lists/${listId}/items?expand=fields(select=CHR_x0020_Ticket_x0020_Number_x0,formStatus,CIPStatuss,Submission_x0020_Date,Emergency_x0020_Change_x0020__x0,Change_x0020_Name,Product)&$filter=fields/ContentType ne 'Folder'&$top=500`;
-
-  while (nextUrl) {
-    const page = await graphFetch(nextUrl, token) as ItemPage;
-    allItems.push(...page.value);
-    nextUrl = page["@odata.nextLink"];
-  }
-
-  return allItems.map((item) => ({
+function mapItem(item: SPItem): CIPRecord {
+  return {
     id: item.id,
     chrTicketNumbers: item.fields.CHR_x0020_Ticket_x0020_Number_x0 ?? "",
     cipType: item.fields.formStatus ?? "",
@@ -114,5 +94,45 @@ export async function fetchCIPRecords(
     emergencyFlag: item.fields.Emergency_x0020_Change_x0020__x0 === "Yes",
     clientName: item.fields.Change_x0020_Name ?? "",
     product: item.fields.Product ?? "",
-  }));
+  };
+}
+
+/** Fetch one page of records. Returns records + nextLink for pagination. */
+export async function fetchCIPRecordsPage(
+  listName?: string | null,
+  userToken?: string | null,
+  nextLink?: string | null,
+): Promise<{ records: CIPRecord[]; nextLink: string | null }> {
+  const resolvedList = listName ?? process.env.SHAREPOINT_LIST_NAME ?? "CIP";
+  const token = userToken ?? undefined;
+
+  let url: string;
+  if (nextLink) {
+    url = nextLink;
+  } else {
+    const siteId = await getSiteId(token);
+    const listId = await getListId(siteId, resolvedList, token);
+    url = `/sites/${siteId}/lists/${listId}/items?expand=fields(select=${FIELDS_SELECT})&$filter=fields/ContentType ne 'Folder'&$top=500`;
+  }
+
+  const page = await graphFetch(url, token) as { value: SPItem[]; "@odata.nextLink"?: string };
+  return {
+    records: page.value.map(mapItem),
+    nextLink: page["@odata.nextLink"] ?? null,
+  };
+}
+
+/** Fetch ALL records (used for non-serverless contexts). */
+export async function fetchCIPRecords(
+  listName?: string | null,
+  userToken?: string | null
+): Promise<CIPRecord[]> {
+  const all: CIPRecord[] = [];
+  let nextLink: string | null = null;
+  do {
+    const page = await fetchCIPRecordsPage(listName, userToken, nextLink);
+    all.push(...page.records);
+    nextLink = page.nextLink;
+  } while (nextLink);
+  return all;
 }

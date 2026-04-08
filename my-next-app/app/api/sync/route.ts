@@ -8,8 +8,14 @@ export async function POST(request: Request) {
   const authHeader = request.headers.get("Authorization");
   const userToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
+  let nextLink: string | null = null;
   try {
-    const result = await syncCIPRecordsToFirestore(listName, userToken);
+    const body = await request.json().catch(() => ({}));
+    nextLink = body?.nextLink ?? null;
+  } catch { /* no body */ }
+
+  try {
+    const result = await syncCIPRecordsToFirestore(listName, userToken, nextLink);
     const status = result.errors.length > 0 ? 207 : 200;
     return NextResponse.json({ success: true, ...result }, { status });
   } catch (error) {
