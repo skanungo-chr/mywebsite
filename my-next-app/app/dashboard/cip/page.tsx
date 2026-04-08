@@ -8,6 +8,7 @@ import FilterDropdown from "@/components/FilterDropdown";
 import DateRangeFilter, { DateRange } from "@/components/DateRangeFilter";
 import CIPDetailModal from "@/components/CIPDetailModal";
 import CIPStatusChart from "@/components/CIPStatusChart";
+import CIPProductChart from "@/components/CIPProductChart";
 import CIPCreateModal from "@/components/CIPCreateModal";
 import CIPEditModal from "@/components/CIPEditModal";
 
@@ -305,10 +306,11 @@ export default function CIPPage() {
         ))}
       </div>
 
-      {/* ── Status Donut Chart ── */}
+      {/* ── Charts ── */}
       {!cipLoading && cipRecords.length > 0 && (
-        <div className="mb-5">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
           <CIPStatusChart records={filteredCIP} />
+          <CIPProductChart records={filteredCIP} />
         </div>
       )}
 

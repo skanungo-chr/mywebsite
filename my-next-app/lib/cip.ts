@@ -21,6 +21,8 @@ export interface CIPRecord {
   cipStatus: string;
   submissionDate: string;
   emergencyFlag: boolean;
+  clientName: string;
+  product: string;
 }
 
 async function getSiteId(token?: string | null): Promise<string> {
@@ -86,6 +88,8 @@ export async function fetchCIPRecords(
         CIPStatuss?: string;
         Submission_x0020_Date?: string;
         Emergency_x0020_Change_x0020__x0?: string;
+        Change_x0020_Name?: string;
+        Product?: string;
       };
     }[];
     "@odata.nextLink"?: string;
@@ -93,7 +97,7 @@ export async function fetchCIPRecords(
 
   const allItems: ItemPage["value"] = [];
   let nextUrl: string | undefined =
-    `/sites/${siteId}/lists/${listId}/items?expand=fields(select=CHR_x0020_Ticket_x0020_Number_x0,formStatus,CIPStatuss,Submission_x0020_Date,Emergency_x0020_Change_x0020__x0)&$filter=fields/ContentType ne 'Folder'&$top=500`;
+    `/sites/${siteId}/lists/${listId}/items?expand=fields(select=CHR_x0020_Ticket_x0020_Number_x0,formStatus,CIPStatuss,Submission_x0020_Date,Emergency_x0020_Change_x0020__x0,Change_x0020_Name,Product)&$filter=fields/ContentType ne 'Folder'&$top=500`;
 
   while (nextUrl) {
     const page = await graphFetch(nextUrl, token) as ItemPage;
@@ -108,5 +112,7 @@ export async function fetchCIPRecords(
     cipStatus: item.fields.CIPStatuss ?? "",
     submissionDate: item.fields.Submission_x0020_Date ?? "",
     emergencyFlag: item.fields.Emergency_x0020_Change_x0020__x0 === "Yes",
+    clientName: item.fields.Change_x0020_Name ?? "",
+    product: item.fields.Product ?? "",
   }));
 }

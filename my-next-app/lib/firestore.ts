@@ -24,6 +24,8 @@ function docToCIPRecord(d: { id: string; data: () => Record<string, unknown> }):
     cipStatus:        String(data.cipStatus        ?? ""),
     submissionDate:   String(data.submissionDate   ?? ""),
     emergencyFlag:    Boolean(data.emergencyFlag),
+    clientName:       String(data.clientName       ?? ""),
+    product:          String(data.product          ?? ""),
   };
 }
 
