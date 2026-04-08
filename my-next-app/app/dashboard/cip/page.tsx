@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { CIPRecord } from "@/lib/cip";
-import { subscribeCIPRecords } from "@/lib/firestore";
+import { subscribeCIPRecords, upsertCIPRecords } from "@/lib/firestore";
 import FilterDropdown from "@/components/FilterDropdown";
 import DateRangeFilter, { DateRange } from "@/components/DateRangeFilter";
 import CIPDetailModal from "@/components/CIPDetailModal";
@@ -109,13 +109,12 @@ export default function CIPPage() {
   const handleSync = async () => {
     setSyncing(true);
     setCipError("");
-    let totalSynced = 0;
     let nextLink: string | null = null;
     let page = 0;
     try {
       do {
         page++;
-        const res = await fetch("/api/sync", {
+        const res = await fetch("/api/sync/fetch", {
           method: "POST",
           headers: { "Content-Type": "application/json", ...authHeaders() },
           body: JSON.stringify({ nextLink }),
@@ -123,12 +122,12 @@ export default function CIPPage() {
         const text = await res.text();
         let data: Record<string, unknown>;
         try { data = JSON.parse(text); }
-        catch { throw new Error(res.status === 504 ? `Sync timed out on page ${page}` : `Server error (${res.status})`); }
+        catch { throw new Error(res.status === 504 ? `Fetch timed out on page ${page}` : `Server error (${res.status})`); }
         if (!data.success) throw new Error(data.error as string);
-        totalSynced += (data.synced as number) ?? 0;
+        const records = data.records as import("@/lib/cip").CIPRecord[];
+        await upsertCIPRecords(records);
         nextLink = (data.nextLink as string) ?? null;
       } while (nextLink);
-
       setLastSynced(new Date().toLocaleTimeString());
     } catch (err) {
       setCipError(err instanceof Error ? err.message : "Sync failed");

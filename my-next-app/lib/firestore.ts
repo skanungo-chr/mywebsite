@@ -11,6 +11,7 @@ import {
   orderBy,
   onSnapshot,
   serverTimestamp,
+  writeBatch,
   type Unsubscribe,
 } from "firebase/firestore";
 import { CIPRecord } from "@/lib/cip";
@@ -81,3 +82,27 @@ export const updateNote = async (id: string, data: Partial<Note>) => {
 export const deleteNote = async (id: string) => {
   await deleteDoc(doc(db, "notes", id));
 };
+
+export async function upsertCIPRecords(records: CIPRecord[]): Promise<void> {
+  const BATCH_SIZE = 499;
+  for (let i = 0; i < records.length; i += BATCH_SIZE) {
+    const batch = writeBatch(db);
+    for (const record of records.slice(i, i + BATCH_SIZE)) {
+      batch.set(
+        doc(db, "cip_records", record.id),
+        {
+          chrTicketNumbers: record.chrTicketNumbers,
+          cipType: record.cipType,
+          cipStatus: record.cipStatus,
+          submissionDate: record.submissionDate,
+          emergencyFlag: record.emergencyFlag,
+          clientName: record.clientName,
+          product: record.product,
+          lastSyncedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+    await batch.commit();
+  }
+}
