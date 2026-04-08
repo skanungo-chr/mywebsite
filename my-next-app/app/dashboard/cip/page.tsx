@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { CIPRecord } from "@/lib/cip";
-import { subscribeCIPRecords, upsertCIPRecords, setLastSyncTimestamp } from "@/lib/firestore";
+import { fetchCIPRecordsOnce, upsertCIPRecords, setLastSyncTimestamp } from "@/lib/firestore";
 import FilterDropdown from "@/components/FilterDropdown";
 import DateRangeFilter, { DateRange } from "@/components/DateRangeFilter";
 import CIPDetailModal from "@/components/CIPDetailModal";
@@ -55,14 +55,13 @@ export default function CIPPage() {
   const [page, setPage]           = useState(1);
   const [pageSize, setPageSize]   = useState(10);
 
-  // Real-time Firestore subscription — runs once on mount
+  // One-time fetch on mount — avoids persistent WebSocket competing with sync writes
   useEffect(() => {
     setCipLoading(true);
-    const unsub = subscribeCIPRecords(
+    fetchCIPRecordsOnce().then(
       (records) => { setCipRecords(records); setCipLoading(false); setCipError(""); },
       (err)     => { setCipError(err.message); setCipLoading(false); }
     );
-    return () => unsub();
   }, []);
 
   const handleExportCSV = () => {
@@ -153,6 +152,9 @@ export default function CIPPage() {
       await setLastSyncTimestamp();
       setLastSynced(new Date().toLocaleTimeString());
       setSyncSummary({ synced: totalSynced, failed: totalFailed });
+      // Refresh dashboard after sync
+      const updated = await fetchCIPRecordsOnce();
+      setCipRecords(updated);
     } catch (err) {
       setCipError(err instanceof Error ? err.message : "Sync failed");
     } finally {
@@ -447,8 +449,8 @@ export default function CIPPage() {
             Export CSV
           </button>
           <div className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-xs text-gray-400">
-            <span className={`w-1.5 h-1.5 rounded-full ${cipLoading ? "bg-yellow-400 animate-pulse" : "bg-green-400 animate-pulse"}`} />
-            {cipLoading ? "Connecting..." : "Live"}
+            <span className={`w-1.5 h-1.5 rounded-full ${cipLoading ? "bg-yellow-400 animate-pulse" : "bg-green-400"}`} />
+            {cipLoading ? "Loading..." : "Ready"}
           </div>
           {isAdmin && (
             <button onClick={handleSeed} disabled={seeding}
