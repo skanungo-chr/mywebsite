@@ -5,134 +5,139 @@ const SITE_PATH = "/sites/CIPCenter";
 
 // Common name variations to try when the configured list name isn't found
 const LIST_NAME_CANDIDATES = [
-  "CIP",
-  "CIP Records",
-  "CIPRecords",
-  "Change Implementation Plan",
-  "Change Implementation Plans",
-  "CIP List",
-  "CIPs",
-];
+    "CIP",
+    "CIP Records",
+    "CIPRecords",
+    "Change Implementation Plan",
+    "Change Implementation Plans",
+    "CIP List",
+    "CIPs",
+  ];
 
 export interface CIPRecord {
-  id: string;
-  chrTicketNumbers: string;
-  cipType: string;
-  cipStatus: string;
-  submissionDate: string;
-  emergencyFlag: boolean;
-  clientName: string;
-  product: string;
+    id: string;
+    chrTicketNumbers: string;
+    cipType: string;
+    cipStatus: string;
+    submissionDate: string;
+    emergencyFlag: boolean;
+    clientName: string;
+    product: string;
+    /** SharePoint Modified timestamp — used for delta-sync to skip unchanged records */
+  sharepointModified?: string;
 }
 
 async function getSiteId(token?: string | null): Promise<string> {
-  const data = await graphFetch(
-    `/sites/${SHAREPOINT_HOST}:${SITE_PATH}:`,
-    token
-  ) as { id: string };
-  return data.id;
+    const data = await graphFetch(
+          `/sites/${SHAREPOINT_HOST}:${SITE_PATH}:`,
+          token
+        ) as { id: string };
+    return data.id;
 }
 
 async function getAllLists(siteId: string, token?: string | null): Promise<{ displayName: string; id: string }[]> {
-  const data = await graphFetch(`/sites/${siteId}/lists`, token) as {
-    value: { displayName: string; id: string }[];
-  };
-  return data.value;
-}
+    const data = await graphFetch(`/sites/${siteId}/lists`, token) as {
+                               value: { displayName: string; id: string }[];
+    };
+    return data.value;
+  }
 
 async function getListId(siteId: string, listName: string, token?: string | null): Promise<string> {
-  const lists = await getAllLists(siteId, token);
+    const lists = await getAllLists(siteId, token);
 
   // Try exact match first (case-insensitive)
   let list = lists.find((l) => l.displayName.toLowerCase() === listName.toLowerCase());
 
   // If not found, try all known candidates
   if (!list) {
-    for (const candidate of LIST_NAME_CANDIDATES) {
-      list = lists.find((l) => l.displayName.toLowerCase() === candidate.toLowerCase());
-      if (list) break;
-    }
+      for (const candidate of LIST_NAME_CANDIDATES) {
+              list = lists.find((l) => l.displayName.toLowerCase() === candidate.toLowerCase());
+              if (list) break;
+      }
   }
 
   // If still not found, include available list names in the error
   if (!list) {
-    const available = lists
-      .filter((l) => !l.displayName.startsWith("_") && !l.displayName.startsWith("appdata"))
-      .map((l) => `"${l.displayName}"`)
-      .join(", ");
-    throw new Error(
-      `CIP list not found on SharePoint site. Available lists: ${available || "none"}. ` +
-      `Set SHAREPOINT_LIST_NAME env var to the correct list name.`
-    );
+        const available = lists
+          .filter((l) => !l.displayName.startsWith("_") && !l.displayName.startsWith("appdata"))
+          .map((l) => `"${l.displayName}"`)
+          .join(", ");
+        throw new Error(
+                `CIP list not found on SharePoint site. Available lists: ${available || "none"}. ` +
+                `Set SHAREPOINT_LIST_NAME env var to the correct list name.`
+              );
   }
 
   return list.id;
 }
 
-const FIELDS_SELECT = "CHR_x0020_Ticket_x0020_Number_x0,formStatus,CIPStatuss,Submission_x0020_Date,Emergency_x0020_Change_x0020__x0,Change_x0020_Name,Product";
+// Added Modified to enable delta-sync (skip records that haven't changed)
+const FIELDS_SELECT = "CHR_x0020_Ticket_x0020_Number_x0,formStatus,CIPStatuss,Submission_x0020_Date,Emergency_x0020_Change_x0020__x0,Change_x0020_Name,Product,Modified";
 
 type SPItem = {
-  id: string;
-  fields: {
-    CHR_x0020_Ticket_x0020_Number_x0?: string;
-    formStatus?: string;
-    CIPStatuss?: string;
-    Submission_x0020_Date?: string;
-    Emergency_x0020_Change_x0020__x0?: string;
-    Change_x0020_Name?: string;
-    Product?: string;
-  };
+    id: string;
+    fields: {
+      CHR_x0020_Ticket_x0020_Number_x0?: string;
+      formStatus?: string;
+      CIPStatuss?: string;
+      Submission_x0020_Date?: string;
+      Emergency_x0020_Change_x0020__x0?: string;
+      Change_x0020_Name?: string;
+      Product?: string;
+      Modified?: string;
+    };
 };
 
 function mapItem(item: SPItem): CIPRecord {
-  return {
-    id: item.id,
-    chrTicketNumbers: item.fields.CHR_x0020_Ticket_x0020_Number_x0 ?? "",
-    cipType: item.fields.formStatus ?? "",
-    cipStatus: item.fields.CIPStatuss ?? "",
-    submissionDate: item.fields.Submission_x0020_Date ?? "",
-    emergencyFlag: item.fields.Emergency_x0020_Change_x0020__x0 === "Yes",
-    clientName: item.fields.Change_x0020_Name ?? "",
-    product: item.fields.Product ?? "",
-  };
+    return {
+          id: item.id,
+          chrTicketNumbers: item.fields.CHR_x0020_Ticket_x0020_Number_x0 ?? "",
+          cipType: item.fields.formStatus ?? "",
+          cipStatus: item.fields.CIPStatuss ?? "",
+          submissionDate: item.fields.Submission_x0020_Date ?? "",
+          emergencyFlag: item.fields.Emergency_x0020_Change_x0020__x0 === "Yes",
+          clientName: item.fields.Change_x0020_Name ?? "",
+          product: item.fields.Product ?? "",
+          sharepointModified: item.fields.Modified ?? undefined,
+    };
 }
 
 /** Fetch one page of records. Returns records + nextLink for pagination. */
 export async function fetchCIPRecordsPage(
-  listName?: string | null,
-  userToken?: string | null,
-  nextLink?: string | null,
-): Promise<{ records: CIPRecord[]; nextLink: string | null }> {
-  const resolvedList = listName ?? process.env.SHAREPOINT_LIST_NAME ?? "CIP";
-  const token = userToken ?? undefined;
+    listName?: string | null,
+    userToken?: string | null,
+    nextLink?: string | null,
+  ): Promise<{ records: CIPRecord[]; nextLink: string | null }> {
+    const resolvedList = listName ?? process.env.SHAREPOINT_LIST_NAME ?? "CIP";
+    const token = userToken ?? undefined;
 
   let url: string;
-  if (nextLink) {
-    url = nextLink;
-  } else {
-    const siteId = await getSiteId(token);
-    const listId = await getListId(siteId, resolvedList, token);
-    url = `/sites/${siteId}/lists/${listId}/items?expand=fields(select=${FIELDS_SELECT})&$filter=fields/ContentType ne 'Folder'&$top=100`;
-  }
+    if (nextLink) {
+          url = nextLink;
+    } else {
+          const siteId = await getSiteId(token);
+          const listId = await getListId(siteId, resolvedList, token);
+          url = `/sites/${siteId}/lists/${listId}/items?expand=fields(select=${FIELDS_SELECT})&$filter=fields/ContentType ne 'Folder'&$top=100`;
+    }
 
   const page = await graphFetch(url, token) as { value: SPItem[]; "@odata.nextLink"?: string };
   return {
-    records: page.value.map(mapItem),
-    nextLink: page["@odata.nextLink"] ?? null,
+        records: page.value.map(mapItem),
+        nextLink: page["@odata.nextLink"] ?? null,
   };
 }
 
 /** Fetch ALL records (used for non-serverless contexts). */
 export async function fetchCIPRecords(
-  listName?: string | null,
-  userToken?: string | null
-): Promise<CIPRecord[]> {
-  const all: CIPRecord[] = [];
-  let nextLink: string | null = null;
-  do {
-    const page = await fetchCIPRecordsPage(listName, userToken, nextLink);
-    all.push(...page.records);
-    nextLink = page.nextLink;
-  } while (nextLink);
-  return all;
+    listName?: string | null,
+    userToken?: string | null
+  ): Promise<CIPRecord[]> {
+    const all: CIPRecord[] = [];
+    let nextLink: string | null = null;
+    do {
+          const page = await fetchCIPRecordsPage(listName, userToken, nextLink);
+          all.push(...page.records);
+          nextLink = page.nextLink;
+    } while (nextLink);
+    return all;
 }
