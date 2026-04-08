@@ -3,12 +3,12 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { CIPRecord } from "@/lib/cip";
-import { fetchCIPRecordsOnce, upsertCIPRecords } from "@/lib/firestore";
+import { subscribeCIPRecords, upsertCIPRecords } from "@/lib/firestore";
 import FilterDropdown from "@/components/FilterDropdown";
 import DateRangeFilter, { DateRange } from "@/components/DateRangeFilter";
 import CIPDetailModal from "@/components/CIPDetailModal";
 import CIPStatusChart from "@/components/CIPStatusChart";
-import CIPProductChart from "@/components/CIPProductChart";
+import { CIPsByCategory, CIPsByCompany, CIPsByProduct, CIPsByTFS, CIPsMonthlyTrend } from "@/components/charts";
 import CIPCreateModal from "@/components/CIPCreateModal";
 import CIPEditModal from "@/components/CIPEditModal";
 
@@ -47,7 +47,8 @@ export default function CIPPage() {
   // Sorting
   type SortKey = "chrTicketNumbers" | "cipType" | "cipStatus" | "submissionDate" | "emergencyFlag";
   const [sortKey, setSortKey]   = useState<SortKey>("submissionDate");
-// Real-time Firestore subscription — runs once on mount
+  const [sortDir, setSortDir]   = useState<"asc" | "desc">("desc");
+
   // Pagination
   const [page, setPage]           = useState(1);
   const [pageSize, setPageSize]   = useState(10);
@@ -55,11 +56,11 @@ export default function CIPPage() {
   // Real-time Firestore subscription — runs once on mount
   useEffect(() => {
     setCipLoading(true);
-    fetchCIPRecordsOnce().then(
+    const unsub = subscribeCIPRecords(
       (records) => { setCipRecords(records); setCipLoading(false); setCipError(""); },
       (err)     => { setCipError(err.message); setCipLoading(false); }
     );
-
+    return () => unsub();
   }, []);
 
   const handleExportCSV = () => {
@@ -318,10 +319,20 @@ export default function CIPPage() {
 
       {/* ── Charts ── */}
       {!cipLoading && cipRecords.length > 0 && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
-          <CIPStatusChart records={filteredCIP} />
-          <CIPProductChart records={filteredCIP} />
-        </div>
+        <>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
+            <CIPStatusChart records={filteredCIP} />
+            <CIPsByProduct records={filteredCIP} />
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
+            <CIPsByCompany records={filteredCIP} />
+            <CIPsByCategory records={filteredCIP} />
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
+            <CIPsByTFS records={filteredCIP} />
+            <CIPsMonthlyTrend records={filteredCIP} />
+          </div>
+        </>
       )}
 
       {/* Toolbar */}
