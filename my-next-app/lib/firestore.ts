@@ -90,7 +90,7 @@ export const deleteNote = async (id: string) => {
 };
 
 export async function upsertCIPRecords(records: CIPRecord[]): Promise<void> {
-  const BATCH_SIZE = 100;
+  const BATCH_SIZE = 40;
   for (let i = 0; i < records.length; i += BATCH_SIZE) {
     const batch = writeBatch(db);
     for (const record of records.slice(i, i + BATCH_SIZE)) {
@@ -111,7 +111,6 @@ export async function upsertCIPRecords(records: CIPRecord[]): Promise<void> {
       );
     }
     await batch.commit();
-    // Throttle to avoid Firestore rate limits
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 500));
   }
 }
