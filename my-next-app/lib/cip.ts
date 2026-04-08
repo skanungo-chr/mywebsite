@@ -115,7 +115,7 @@ export async function fetchCIPRecordsPage(
   } else {
     const siteId = await getSiteId(token);
     const listId = await getListId(siteId, resolvedList, token);
-    url = `/sites/${siteId}/lists/${listId}/items?expand=fields(select=${FIELDS_SELECT})&$filter=fields/ContentType ne 'Folder'&$top=100`;
+    url = `/sites/${siteId}/lists/${listId}/items?expand=fields(select=${FIELDS_SELECT})&$filter=fields/ContentType ne 'Folder'&$top=50`;
   }
 
   const page = await graphFetch(url, token) as { value: SPItem[]; "@odata.nextLink"?: string };

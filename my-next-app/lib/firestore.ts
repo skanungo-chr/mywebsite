@@ -112,6 +112,6 @@ export async function upsertCIPRecords(records: CIPRecord[]): Promise<void> {
     }
     await batch.commit();
     // Throttle to avoid Firestore rate limits
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 150));
   }
 }
