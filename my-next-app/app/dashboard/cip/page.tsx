@@ -47,8 +47,7 @@ export default function CIPPage() {
   // Sorting
   type SortKey = "chrTicketNumbers" | "cipType" | "cipStatus" | "submissionDate" | "emergencyFlag";
   const [sortKey, setSortKey]   = useState<SortKey>("submissionDate");
-  const [sortDir, setSortDir]   = useState<"asc" | "desc">("desc");
-
+// Real-time Firestore subscription — runs once on mount
   // Pagination
   const [page, setPage]           = useState(1);
   const [pageSize, setPageSize]   = useState(10);
@@ -60,7 +59,7 @@ export default function CIPPage() {
       (records) => { setCipRecords(records); setCipLoading(false); setCipError(""); },
       (err)     => { setCipError(err.message); setCipLoading(false); }
     );
-    return () => unsub();
+
   }, []);
 
   const handleExportCSV = () => {
