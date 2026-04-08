@@ -190,6 +190,21 @@ export default function CIPPage() {
     }
   };
 
+  const handleCheckProducts = async () => {
+    setDebugResult("Checking SharePoint Product field values...");
+    try {
+      const res  = await fetch("/api/sync/fetch", { headers: authHeaders() });
+      const data = await res.json();
+      if (data.error) { setDebugResult(`Error: ${data.error}`); return; }
+      const products = (data.sample as { id: string; Product: unknown }[]).map(
+        (s) => `id=${s.id}  Product=${JSON.stringify(s.Product)}`
+      ).join("\n");
+      setDebugResult(`SharePoint raw Product values (first 10 records):\n\n${products}`);
+    } catch (err) {
+      setDebugResult(err instanceof Error ? err.message : "Failed");
+    }
+  };
+
   const STATUS_DOTS: Record<string, string> = {
     open:          "bg-blue-400",
     "in progress": "bg-yellow-400",
@@ -482,6 +497,12 @@ export default function CIPPage() {
             <button onClick={handleDebug}
               className="bg-gray-700 hover:bg-gray-600 text-xs px-3 py-2 rounded-lg transition-colors text-gray-400">
               Debug
+            </button>
+          )}
+          {isAdmin && (
+            <button onClick={handleCheckProducts}
+              className="bg-gray-700 hover:bg-gray-600 text-xs px-3 py-2 rounded-lg transition-colors text-amber-400">
+              Check SP Products
             </button>
           )}
         </div>

@@ -72,31 +72,43 @@ async function getListId(siteId: string, listName: string, token?: string | null
 
 const FIELDS_SELECT = "CHR_x0020_Ticket_x0020_Number_x0,formStatus,CIPStatuss,Submission_x0020_Date,Emergency_x0020_Change_x0020__x0,Change_x0020_Name,Product,Category";
 
+/** SharePoint can return choice fields as strings OR lookup fields as objects */
+function extractText(val: unknown): string {
+  if (!val) return "";
+  if (typeof val === "string") return val.trim();
+  if (typeof val === "object") {
+    const o = val as Record<string, unknown>;
+    const v = o.LookupValue ?? o.Value ?? o.DisplayValue ?? o.lookupValue ?? "";
+    return String(v).trim();
+  }
+  return String(val).trim();
+}
+
 type SPItem = {
   id: string;
   fields: {
-    CHR_x0020_Ticket_x0020_Number_x0?: string;
-    formStatus?: string;
-    CIPStatuss?: string;
-    Submission_x0020_Date?: string;
-    Emergency_x0020_Change_x0020__x0?: string;
-    Change_x0020_Name?: string;
-    Product?: string;
-    Category?: string;
+    CHR_x0020_Ticket_x0020_Number_x0?: unknown;
+    formStatus?: unknown;
+    CIPStatuss?: unknown;
+    Submission_x0020_Date?: unknown;
+    Emergency_x0020_Change_x0020__x0?: unknown;
+    Change_x0020_Name?: unknown;
+    Product?: unknown;
+    Category?: unknown;
   };
 };
 
 function mapItem(item: SPItem): CIPRecord {
   return {
     id: item.id,
-    chrTicketNumbers: item.fields.CHR_x0020_Ticket_x0020_Number_x0 ?? "",
-    cipType: item.fields.formStatus ?? "",
-    cipStatus: item.fields.CIPStatuss ?? "",
-    submissionDate: item.fields.Submission_x0020_Date ?? "",
-    emergencyFlag: item.fields.Emergency_x0020_Change_x0020__x0 === "Yes",
-    clientName: item.fields.Change_x0020_Name ?? "",
-    product: item.fields.Product ?? "",
-    category: item.fields.Category ?? "",
+    chrTicketNumbers: extractText(item.fields.CHR_x0020_Ticket_x0020_Number_x0),
+    cipType:          extractText(item.fields.formStatus),
+    cipStatus:        extractText(item.fields.CIPStatuss),
+    submissionDate:   extractText(item.fields.Submission_x0020_Date),
+    emergencyFlag:    extractText(item.fields.Emergency_x0020_Change_x0020__x0) === "Yes",
+    clientName:       extractText(item.fields.Change_x0020_Name),
+    product:          extractText(item.fields.Product),
+    category:         extractText(item.fields.Category),
   };
 }
 
