@@ -100,11 +100,20 @@ function mapItem(item: SPItem): CIPRecord {
   };
 }
 
+export const FETCH_FROM_YEARS: Record<string, string> = {
+  "2026": "2026-01-01T00:00:00Z",
+  "2025": "2025-01-01T00:00:00Z",
+  "2024": "2024-01-01T00:00:00Z",
+  "2023": "2023-01-01T00:00:00Z",
+  "All":  "2020-01-01T00:00:00Z",
+};
+
 /** Fetch one page of records. Returns records + nextLink for pagination. */
 export async function fetchCIPRecordsPage(
   listName?: string | null,
   userToken?: string | null,
   nextLink?: string | null,
+  fromYear?: string | null,
 ): Promise<{ records: CIPRecord[]; nextLink: string | null }> {
   const resolvedList = listName ?? process.env.SHAREPOINT_LIST_NAME ?? "CIP";
   const token = userToken ?? undefined;
@@ -115,7 +124,10 @@ export async function fetchCIPRecordsPage(
   } else {
     const siteId = await getSiteId(token);
     const listId = await getListId(siteId, resolvedList, token);
-    url = `/sites/${siteId}/lists/${listId}/items?expand=fields(select=${FIELDS_SELECT})&$filter=fields/ContentType ne 'Folder'&$top=25`;
+    const fromDate = FETCH_FROM_YEARS[fromYear ?? "2025"] ?? FETCH_FROM_YEARS["2025"];
+    const dateFilter = `fields/Submission_x0020_Date ge '${fromDate}'`;
+    const folderFilter = `fields/ContentType ne 'Folder'`;
+    url = `/sites/${siteId}/lists/${listId}/items?expand=fields(select=${FIELDS_SELECT})&$filter=${folderFilter} and ${dateFilter}&$orderby=fields/Submission_x0020_Date desc&$top=25`;
   }
 
   const page = await graphFetch(url, token) as { value: SPItem[]; "@odata.nextLink"?: string };

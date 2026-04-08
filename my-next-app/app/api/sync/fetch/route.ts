@@ -8,14 +8,16 @@ export async function POST(request: Request) {
 
   let nextLink: string | null = null;
   let listName: string | undefined;
+  let fromYear: string | null = null;
   try {
     const body = await request.json().catch(() => ({}));
-    nextLink = body?.nextLink ?? null;
-    listName = body?.listName ?? undefined;
+    nextLink  = body?.nextLink  ?? null;
+    listName  = body?.listName  ?? undefined;
+    fromYear  = body?.fromYear  ?? "2025";
   } catch { /* no body */ }
 
   try {
-    const result = await fetchCIPRecordsPage(listName, userToken, nextLink);
+    const result = await fetchCIPRecordsPage(listName, userToken, nextLink, fromYear);
     return NextResponse.json({ success: true, records: result.records, nextLink: result.nextLink });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
