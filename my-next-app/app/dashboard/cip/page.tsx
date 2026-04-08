@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { CIPRecord } from "@/lib/cip";
-import { subscribeCIPRecords, upsertCIPRecords } from "@/lib/firestore";
+import { subscribeCIPRecords, upsertCIPRecords, setLastSyncTimestamp } from "@/lib/firestore";
 import FilterDropdown from "@/components/FilterDropdown";
 import DateRangeFilter, { DateRange } from "@/components/DateRangeFilter";
 import CIPDetailModal from "@/components/CIPDetailModal";
@@ -35,6 +35,8 @@ export default function CIPPage() {
   const [syncing, setSyncing]           = useState(false);
   const [seeding, setSeeding]           = useState(false);
   const [lastSynced, setLastSynced]     = useState<string | null>(null);
+  const [syncProgress, setSyncProgress] = useState<{ synced: number; total: number } | null>(null);
+  const [syncSummary, setSyncSummary]   = useState<{ synced: number; failed: number } | null>(null);
   const [filterStatus, setFilterStatus]       = useState<string[]>([]);
   const [filterType, setFilterType]           = useState("");
   const [filterEmergency, setFilterEmergency] = useState(false);
@@ -107,11 +109,20 @@ export default function CIPPage() {
   const fetchCIPRecords = () => { setCipError(""); };
 
   const handleSync = async () => {
+    if (syncing) return; // prevent double sync
     setSyncing(true);
     setCipError("");
+    setSyncSummary(null);
+    setSyncProgress(null);
+
     let nextLink: string | null = null;
     let page = 0;
+    let totalSynced = 0;
+    let totalFailed = 0;
+    let grandTotal = 0;
+
     try {
+      // First pass: count total records for progress display
       do {
         page++;
         const res = await fetch("/api/sync/fetch", {
@@ -124,15 +135,29 @@ export default function CIPPage() {
         try { data = JSON.parse(text); }
         catch { throw new Error(res.status === 504 ? `Fetch timed out on page ${page}` : `Server error (${res.status})`); }
         if (!data.success) throw new Error(data.error as string);
+
         const records = data.records as import("@/lib/cip").CIPRecord[];
-        await upsertCIPRecords(records);
+        grandTotal += records.length;
+        setSyncProgress({ synced: totalSynced, total: grandTotal });
+
+        const result = await upsertCIPRecords(records, (p) => {
+          setSyncProgress({ synced: totalSynced + p.synced, total: grandTotal });
+        });
+
+        totalSynced += result.synced;
+        totalFailed += result.failed;
         nextLink = (data.nextLink as string) ?? null;
+        setSyncProgress({ synced: totalSynced, total: grandTotal });
       } while (nextLink);
+
+      await setLastSyncTimestamp();
       setLastSynced(new Date().toLocaleTimeString());
+      setSyncSummary({ synced: totalSynced, failed: totalFailed });
     } catch (err) {
       setCipError(err instanceof Error ? err.message : "Sync failed");
     } finally {
       setSyncing(false);
+      setSyncProgress(null);
     }
   };
 
@@ -390,12 +415,32 @@ export default function CIPPage() {
         )}
 
         <div className="ml-auto flex items-center gap-3">
-          {lastSynced && <span className="text-xs text-gray-500">Last synced: {lastSynced}</span>}
-{isAdmin && (
-            <button onClick={handleSync} disabled={syncing}
-              className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-sm font-medium px-4 py-2 rounded-lg transition-colors">
-              {syncing ? "Syncing..." : "Sync from SharePoint"}
-            </button>
+          {/* Sync summary */}
+          {syncSummary && !syncing && (
+            <span className="text-xs text-green-400">
+              Sync complete: {syncSummary.synced.toLocaleString()} synced
+              {syncSummary.failed > 0 && <span className="text-red-400">, {syncSummary.failed} failed</span>}
+            </span>
+          )}
+          {lastSynced && !syncSummary && <span className="text-xs text-gray-500">Last synced: {lastSynced}</span>}
+          {isAdmin && (
+            <div className="flex flex-col items-end gap-1">
+              <button onClick={handleSync} disabled={syncing}
+                className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-sm font-medium px-4 py-2 rounded-lg transition-colors min-w-[180px] text-center">
+                {syncing && syncProgress
+                  ? `Syncing... ${syncProgress.synced.toLocaleString()} / ${syncProgress.total.toLocaleString()} (${Math.round((syncProgress.synced / Math.max(syncProgress.total, 1)) * 100)}%)`
+                  : syncing ? "Syncing..."
+                  : "Sync from SharePoint"}
+              </button>
+              {syncing && syncProgress && (
+                <div className="w-full h-1 bg-gray-700 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-indigo-500 transition-all duration-300"
+                    style={{ width: `${Math.round((syncProgress.synced / Math.max(syncProgress.total, 1)) * 100)}%` }}
+                  />
+                </div>
+              )}
+            </div>
           )}
           <button onClick={handleExportCSV}
             className="bg-emerald-700 hover:bg-emerald-600 text-sm font-medium px-4 py-2 rounded-lg transition-colors">
