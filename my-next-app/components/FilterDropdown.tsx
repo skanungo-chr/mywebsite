@@ -26,11 +26,18 @@ export default function FilterDropdown(props: Props) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const handler = (e: MouseEvent) => {
+    const mouseHandler = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    const keyHandler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", mouseHandler);
+    document.addEventListener("keydown", keyHandler);
+    return () => {
+      document.removeEventListener("mousedown", mouseHandler);
+      document.removeEventListener("keydown", keyHandler);
+    };
   }, []);
 
   // ── Single-select helpers ──────────────────────────────────────────────────
@@ -52,6 +59,12 @@ export default function FilterDropdown(props: Props) {
     e.stopPropagation();
     if (props.multi) props.onChange([]);
   };
+  const selectAll = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (props.multi) props.onChange(options.map((o) => o.value));
+  };
+  const allSelected  = props.multi && multiValues.length === options.length && options.length > 0;
+  const noneSelected = multiValues.length === 0;
 
   const isActive = props.multi ? multiValues.length > 0 : !!singleValue;
   const selected  = !props.multi ? options.find((o) => o.value === singleValue) : null;
@@ -90,7 +103,7 @@ export default function FilterDropdown(props: Props) {
                 d="M12 3c2.755 0 5.455.232 8.083.678.533.09.917.556.917 1.096v1.044a2.25 2.25 0 01-.659 1.591l-5.432 5.432a2.25 2.25 0 00-.659 1.591v2.927a2.25 2.25 0 01-1.244 2.013L9.75 21v-6.568a2.25 2.25 0 00-.659-1.591L3.659 7.409A2.25 2.25 0 013 5.818V4.774c0-.54.384-1.006.917-1.096A48.32 48.32 0 0112 3z" />
             </svg>
             <span>{label}</span>
-            {multiValues.length > 0 && (
+            {multiValues.length > 0 && !allSelected && (
               <>
                 <span className="bg-indigo-600 text-white text-xs font-bold px-1.5 py-0.5 rounded-full leading-none">
                   {multiValues.length}
@@ -140,18 +153,32 @@ export default function FilterDropdown(props: Props) {
             </>
           )}
 
-          {/* ── Multi-select: "Select all / Clear" header ── */}
+          {/* ── Multi-select header ── */}
           {props.multi && options.length > 0 && (
-            <>
-              <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800">
-                <span className="text-xs text-gray-500">{multiValues.length} of {options.length} selected</span>
-                {multiValues.length > 0 && (
-                  <button onClick={clearMulti} className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800 gap-2">
+              <span className="text-xs text-gray-500 shrink-0">
+                {noneSelected
+                  ? "All shown"
+                  : allSelected
+                  ? `All ${options.length} selected`
+                  : `${multiValues.length} of ${options.length} selected`}
+              </span>
+              <div className="flex items-center gap-1.5 text-xs shrink-0">
+                {!allSelected && (
+                  <button onClick={selectAll} className="text-indigo-400 hover:text-indigo-300 transition-colors">
+                    Select all
+                  </button>
+                )}
+                {!allSelected && !noneSelected && (
+                  <span className="text-gray-600">|</span>
+                )}
+                {!noneSelected && (
+                  <button onClick={clearMulti} className="text-indigo-400 hover:text-indigo-300 transition-colors">
                     Clear all
                   </button>
                 )}
               </div>
-            </>
+            </div>
           )}
 
           {/* ── Options ── */}
