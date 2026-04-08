@@ -43,11 +43,9 @@ function colorFor(name: string): string {
 }
 
 interface CIPLike {
-  product?: unknown;
-  Product?: unknown;
-  cipType?: unknown;
-  formStatus?: unknown;
-  [key: string]: unknown;
+  product?: string;
+  cipType?: string;
+  formStatus?: string;
 }
 
 interface DataPoint { name: string; value: number; color?: string; }
@@ -59,7 +57,7 @@ function buildData(props: Props): DataPoint[] {
     const counts: Record<string, number> = {};
     for (const r of props.records) {
       // Try every possible field name
-      const raw = r.product ?? r.Product ?? r["product"] ?? r["Product"] ?? "";
+      const raw = r.product ?? "";
       const name = normalizeProduct(raw);
       counts[name] = (counts[name] ?? 0) + 1;
     }
