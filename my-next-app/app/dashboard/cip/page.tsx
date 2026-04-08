@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { CIPRecord } from "@/lib/cip";
-import { subscribeCIPRecords, upsertCIPRecords } from "@/lib/firestore";
+import { fetchCIPRecordsOnce, upsertCIPRecords } from "@/lib/firestore";
 import FilterDropdown from "@/components/FilterDropdown";
 import DateRangeFilter, { DateRange } from "@/components/DateRangeFilter";
 import CIPDetailModal from "@/components/CIPDetailModal";
@@ -56,7 +56,7 @@ export default function CIPPage() {
   // Real-time Firestore subscription — runs once on mount
   useEffect(() => {
     setCipLoading(true);
-    const unsub = subscribeCIPRecords(
+    fetchCIPRecordsOnce().then(
       (records) => { setCipRecords(records); setCipLoading(false); setCipError(""); },
       (err)     => { setCipError(err.message); setCipLoading(false); }
     );
