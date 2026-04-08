@@ -117,7 +117,7 @@ export default function FilterDropdown(props: Props) {
       </button>
 
       {open && (
-        <div className="absolute top-full left-0 mt-1.5 min-w-[200px] bg-gray-900 border border-gray-700 rounded-xl shadow-2xl overflow-hidden z-30">
+        <div className="absolute top-full left-0 mt-1.5 min-w-[220px] bg-[#1a1f2e] border border-gray-700 rounded-xl shadow-2xl z-30 overflow-hidden flex flex-col max-h-80">
 
           {/* ── Single-select "All" option ── */}
           {!props.multi && (
@@ -155,6 +155,7 @@ export default function FilterDropdown(props: Props) {
           )}
 
           {/* ── Options ── */}
+          <div className="overflow-y-auto flex-1">
           {options.map((opt) => {
             if (props.multi) {
               const checked = multiValues.includes(opt.value);
@@ -204,6 +205,7 @@ export default function FilterDropdown(props: Props) {
               </button>
             );
           })}
+          </div>
         </div>
       )}
     </div>

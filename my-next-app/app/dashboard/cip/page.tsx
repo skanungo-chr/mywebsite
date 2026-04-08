@@ -38,7 +38,7 @@ export default function CIPPage() {
   const [syncProgress, setSyncProgress] = useState<{ synced: number; total: number } | null>(null);
   const [syncSummary, setSyncSummary]   = useState<{ synced: number; failed: number } | null>(null);
   const [filterStatus, setFilterStatus]       = useState<string[]>([]);
-  const [filterType, setFilterType]           = useState("");
+  const [filterType, setFilterType]           = useState<string[]>([]);
   const [filterEmergency, setFilterEmergency] = useState(false);
   const [dateRange, setDateRange]       = useState<DateRange>({ from: "", to: "" });
   const [debugResult, setDebugResult]   = useState<string | null>(null);
@@ -209,7 +209,7 @@ export default function CIPPage() {
 
   const filteredCIP = cipRecords.filter((r) => {
     const matchStatus    = filterStatus.length > 0 ? filterStatus.some((s) => r.cipStatus.toLowerCase() === s.toLowerCase()) : true;
-    const matchType      = filterType      ? r.cipType.toLowerCase()   === filterType.toLowerCase()   : true;
+    const matchType      = filterType.length > 0 ? filterType.some((t) => r.cipType.toLowerCase() === t.toLowerCase()) : true;
     const matchEmergency = filterEmergency ? r.emergencyFlag === true                                 : true;
     const recDate        = r.submissionDate ? r.submissionDate.slice(0, 10) : "";
     const matchFrom      = dateRange.from  ? recDate >= dateRange.from : true;
@@ -373,6 +373,7 @@ export default function CIPPage() {
         />
 
         <FilterDropdown
+          multi
           label="CIP Type"
           options={typeOptions}
           value={filterType}
@@ -407,9 +408,9 @@ export default function CIPPage() {
         )}
 
         {/* Clear all filters */}
-        {(filterStatus.length > 0 || filterType || filterEmergency || dateRange.from || dateRange.to) && (
+        {(filterStatus.length > 0 || filterType.length > 0 || filterEmergency || dateRange.from || dateRange.to) && (
           <button
-            onClick={() => { setFilterStatus([]); setFilterType(""); setFilterEmergency(false); setDateRange({ from: "", to: "" }); }}
+            onClick={() => { setFilterStatus([]); setFilterType([]); setFilterEmergency(false); setDateRange({ from: "", to: "" }); }}
             className="text-xs text-gray-500 hover:text-red-400 transition-colors underline underline-offset-2"
           >
             Clear filters
