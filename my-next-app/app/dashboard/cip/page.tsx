@@ -194,12 +194,12 @@ export default function CIPPage() {
   // ── KPI computations ──────────────────────────────────────────────────────
   const thisMonth = new Date().toISOString().slice(0, 7); // "YYYY-MM"
   const kpi = {
-    total:      cipRecords.length,
-    approved:   cipRecords.filter((r) => r.cipStatus.toLowerCase() === "approved").length,
-    submitted:  cipRecords.filter((r) => r.cipStatus.toLowerCase() === "submitted").length,
-    draft:      cipRecords.filter((r) => r.cipStatus.toLowerCase() === "draft").length,
-    emergency:  cipRecords.filter((r) => r.emergencyFlag).length,
-    thisMonth:  cipRecords.filter((r) => r.submissionDate?.slice(0, 7) === thisMonth).length,
+    total:      filteredCIP.length,
+    approved:   filteredCIP.filter((r) => r.cipStatus.toLowerCase() === "approved").length,
+    submitted:  filteredCIP.filter((r) => r.cipStatus.toLowerCase() === "submitted").length,
+    draft:      filteredCIP.filter((r) => r.cipStatus.toLowerCase() === "draft").length,
+    emergency:  filteredCIP.filter((r) => r.emergencyFlag).length,
+    thisMonth:  filteredCIP.filter((r) => r.submissionDate?.slice(0, 7) === thisMonth).length,
   };
 
   const totalPages  = Math.max(1, Math.ceil(sortedCIP.length / pageSize));
