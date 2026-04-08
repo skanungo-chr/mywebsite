@@ -66,9 +66,9 @@ export async function setLastSyncTimestamp(): Promise<void> {
 
 // ── Batch Upsert with retry + progress ───────────────────────────────────────
 
-const BATCH_SIZE   = 40;
-const BATCH_DELAY  = 500;   // ms between batches
-const RETRY_DELAY  = 3000;  // ms before retry on backoff error
+const BATCH_SIZE   = 20;
+const BATCH_DELAY  = 2000;  // ms between batches
+const RETRY_DELAY  = 5000;  // ms before retry on backoff error
 const MAX_RETRIES  = 3;
 
 async function commitWithRetry(batch: ReturnType<typeof writeBatch>): Promise<boolean> {
