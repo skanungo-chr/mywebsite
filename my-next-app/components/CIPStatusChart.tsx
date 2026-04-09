@@ -79,7 +79,7 @@ export default function CIPStatusChart({ records }: Props) {
         legend: {
           position: "right",
           labels: {
-            color: "#9ca3af",
+            color: "#d1d5db",
             font: { size: 12 },
             padding: 12,
             usePointStyle: true,
@@ -91,6 +91,7 @@ export default function CIPStatusChart({ records }: Props) {
                 text: `${label}  ${ds.data[i]}  (${Math.round(((ds.data[i] as number) / total) * 100)}%)`,
                 fillStyle: (ds.backgroundColor as string[])[i],
                 strokeStyle: (ds.borderColor as string[])[i],
+                fontColor: (ds.borderColor as string[])[i],
                 lineWidth: 1,
                 hidden: false,
                 index: i,
