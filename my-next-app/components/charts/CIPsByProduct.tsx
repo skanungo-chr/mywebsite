@@ -1,5 +1,8 @@
 "use client";
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, Cell, LabelList,
+} from "recharts";
 
 const PRODUCT_COLORS: Record<string, string> = {
   "OMNIA":                    "#6366F1",
@@ -23,7 +26,7 @@ const NORMALIZE: Record<string, string> = {
   "acp":                       "Advanced Customer Portal",
   "payment processor":         "Payment Processor",
   "payment":                   "Payment Processor",
-  "report writer":              "Report Writer",
+  "report writer":             "Report Writer",
   "general software":          "General Software",
   "data warehouse":            "Data Warehouse",
   "xml invoice":               "XML Invoice",
@@ -32,9 +35,7 @@ const NORMALIZE: Record<string, string> = {
 function normalizeProduct(raw: unknown): string {
   if (!raw || String(raw).trim() === "") return "Other";
   const trimmed = String(raw).trim();
-  // exact match first
   if (PRODUCT_COLORS[trimmed]) return trimmed;
-  // case-insensitive normalize
   return NORMALIZE[trimmed.toLowerCase()] ?? trimmed;
 }
 
@@ -42,12 +43,7 @@ function colorFor(name: string): string {
   return PRODUCT_COLORS[name] ?? "#6B7280";
 }
 
-interface CIPLike {
-  product?: string;
-  cipType?: string;
-  formStatus?: string;
-}
-
+interface CIPLike { product?: string; cipType?: string; formStatus?: string; }
 interface DataPoint { name: string; value: number; color?: string; }
 interface Props { data?: DataPoint[]; records?: CIPLike[]; }
 
@@ -56,9 +52,7 @@ function buildData(props: Props): DataPoint[] {
   if (props.records && props.records.length > 0) {
     const counts: Record<string, number> = {};
     for (const r of props.records) {
-      // Try every possible field name
-      const raw = r.product ?? "";
-      const name = normalizeProduct(raw);
+      const name = normalizeProduct(r.product ?? "");
       counts[name] = (counts[name] ?? 0) + 1;
     }
     return Object.entries(counts)
@@ -86,40 +80,50 @@ export default function CIPsByProduct(props: Props) {
     );
   }
 
+  const chartHeight = data.length * 44 + 60;
+
   return (
     <div className="bg-[#111827] rounded-2xl p-5 border border-gray-800">
-      <div className="flex items-center justify-between mb-2">
-        <h3 className="text-sm font-bold text-white">CIPs by Product</h3>
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h3 className="text-sm font-bold text-white">CIPs by Product</h3>
+          <p className="text-xs text-gray-500 mt-0.5">{total.toLocaleString()} total records</p>
+        </div>
         <span className="text-xs font-semibold bg-indigo-900/50 text-indigo-300 px-2.5 py-1 rounded-full border border-indigo-800">
-          {total.toLocaleString()} total
+          {data.length} products
         </span>
       </div>
 
       {allOther && (
-        <div className="mb-2 px-3 py-2 rounded-lg bg-yellow-900/20 border border-yellow-800/40 text-xs text-yellow-400">
+        <div className="mb-3 px-3 py-2 rounded-lg bg-yellow-900/20 border border-yellow-800/40 text-xs text-yellow-400">
           ⚠️ Product field is empty — run Sync from SharePoint to populate product data.
         </div>
       )}
 
-      {/* Donut + center label */}
-      <div className="relative" style={{ height: 260 }}>
-        <ResponsiveContainer width="100%" height={260}>
-          <PieChart>
-            <Pie
-              data={data}
-              cx="50%"
-              cy="50%"
-              innerRadius={80}
-              outerRadius={130}
-              dataKey="value"
-              paddingAngle={2}
-              strokeWidth={0}
-            >
-              {data.map((entry, i) => (
-                <Cell key={i} fill={entry.color ?? colorFor(entry.name)} />
-              ))}
-            </Pie>
+      <div style={{ height: chartHeight }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart
+            layout="vertical"
+            data={data}
+            margin={{ top: 4, right: 56, left: 8, bottom: 4 }}
+          >
+            <CartesianGrid strokeDasharray="4 4" stroke="#374151" horizontal={false} />
+            <XAxis
+              type="number"
+              tick={{ fill: "#9ca3af", fontSize: 11 }}
+              tickLine={false}
+              axisLine={{ stroke: "#374151" }}
+            />
+            <YAxis
+              type="category"
+              dataKey="name"
+              width={180}
+              tick={{ fill: "#d1d5db", fontSize: 11 }}
+              tickLine={false}
+              axisLine={false}
+            />
             <Tooltip
+              cursor={{ fill: "#1f293780" }}
               contentStyle={{
                 background: "#1F2937",
                 border: "1px solid #374151",
@@ -127,28 +131,20 @@ export default function CIPsByProduct(props: Props) {
                 color: "#ffffff",
                 fontSize: 12,
               }}
-              formatter={(v, name) => [`${Number(v).toLocaleString()} CIPs`, name]}
+              formatter={(v) => [Number(v).toLocaleString(), "CIPs"]}
             />
-          </PieChart>
+            <Bar dataKey="value" radius={[0, 4, 4, 0]} maxBarSize={28}>
+              {data.map((entry, i) => (
+                <Cell key={i} fill={entry.color ?? colorFor(entry.name)} />
+              ))}
+              <LabelList
+                dataKey="value"
+                position="right"
+                style={{ fill: "#9ca3af", fontSize: 11 }}
+              />
+            </Bar>
+          </BarChart>
         </ResponsiveContainer>
-
-        {/* Center label */}
-        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          <span className="text-2xl font-bold text-white tabular-nums">{total.toLocaleString()}</span>
-          <span className="text-xs text-gray-500 mt-0.5">CIPs</span>
-        </div>
-      </div>
-
-      {/* Legend — 2 column grid */}
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 mt-3 px-1">
-        {data.map((d) => (
-          <div key={d.name} className="flex items-center gap-1.5 min-w-0">
-            <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: d.color ?? colorFor(d.name) }} />
-            <span className="text-xs text-gray-400 truncate">
-              {d.name} <span className="text-gray-500">({d.value.toLocaleString()})</span>
-            </span>
-          </div>
-        ))}
       </div>
     </div>
   );
