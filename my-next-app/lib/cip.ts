@@ -3,6 +3,10 @@ import { graphFetch } from "@/lib/msgraph";
 const SHAREPOINT_HOST = "chrsolutionsinc649.sharepoint.com";
 const SITE_PATH = "/sites/CIPCenter";
 
+// Hard-coded from debug output — skips 3 round-trip discovery calls per sync page
+const KNOWN_SITE_ID  = "chrsolutionsinc649.sharepoint.com,a9d92a60-44d5-47b7-86de-794f93999cd8,59463312-c77a-4349-8959-a2d659ec9ba3";
+const KNOWN_LIST_ID  = "0d4249ce-7b8e-4a8d-bc67-07bc405ac2ce";
+
 // Common name variations to try when the configured list name isn't found
 const LIST_NAME_CANDIDATES = [
   "CIP",
@@ -134,8 +138,15 @@ export async function fetchCIPRecordsPage(
   if (nextLink) {
     url = nextLink;
   } else {
-    const siteId = await getSiteId(token);
-    const listId = await getListId(siteId, resolvedList, token);
+    // Use hard-coded IDs to skip 3 discovery round-trips (getSiteId + getAllLists + getListId)
+    // which was burning the Vercel 10s timeout before the first record was fetched.
+    // Update KNOWN_SITE_ID / KNOWN_LIST_ID if the SharePoint site is ever migrated.
+    let siteId = KNOWN_SITE_ID;
+    let listId = KNOWN_LIST_ID;
+    if (!siteId || !listId) {
+      siteId = await getSiteId(token);
+      listId = await getListId(siteId, resolvedList, token);
+    }
     const fromDate = FETCH_FROM_YEARS[fromYear ?? "2025"] ?? FETCH_FROM_YEARS["2025"];
     const dateFilter = `fields/Submission_x0020_Date ge '${fromDate}'`;
     const folderFilter = `fields/ContentType ne 'Folder'`;
