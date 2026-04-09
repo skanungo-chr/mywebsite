@@ -70,7 +70,7 @@ async function getListId(siteId: string, listName: string, token?: string | null
   return list.id;
 }
 
-const FIELDS_SELECT = "CHR_x0020_Ticket_x0020_Number_x0,formStatus,CIPStatuss,Submission_x0020_Date,Emergency_x0020_Change_x0020__x0,Change_x0020_Name,Product,Category";
+const FIELDS_SELECT = "CHR_x0020_Ticket_x0020_Number_x0,formStatus,CIPStatuss,Submission_x0020_Date,Emergency_x0020_Change_x0020__x0,Change_x0020_Name,Product_x0020_and_x0020_Version,Category";
 
 /** SharePoint can return choice fields as strings OR lookup fields as objects */
 function extractText(val: unknown): string {
@@ -93,7 +93,7 @@ type SPItem = {
     Submission_x0020_Date?: unknown;
     Emergency_x0020_Change_x0020__x0?: unknown;
     Change_x0020_Name?: unknown;
-    Product?: unknown;
+    Product_x0020_and_x0020_Version?: unknown;
     Category?: unknown;
   };
 };
@@ -107,7 +107,7 @@ function mapItem(item: SPItem): CIPRecord {
     submissionDate:   extractText(item.fields.Submission_x0020_Date),
     emergencyFlag:    extractText(item.fields.Emergency_x0020_Change_x0020__x0) === "Yes",
     clientName:       extractText(item.fields.Change_x0020_Name),
-    product:          extractText(item.fields.Product),
+    product:          extractText(item.fields.Product_x0020_and_x0020_Version),
     category:         extractText(item.fields.Category),
   };
 }
