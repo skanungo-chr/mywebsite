@@ -191,15 +191,21 @@ export default function CIPPage() {
   };
 
   const handleCheckProducts = async () => {
-    setDebugResult("Checking SharePoint Product field values...");
+    setDebugResult("Scanning SharePoint for Product field (fetching all fields, no $select)...");
     try {
-      const res  = await fetch("/api/sync/fetch", { headers: authHeaders() });
+      const res  = await fetch("/api/cip/debug", { headers: authHeaders() });
       const data = await res.json();
-      if (data.error) { setDebugResult(`Error: ${data.error}`); return; }
-      const products = (data.sample as { id: string; Product: unknown }[]).map(
-        (s) => `id=${s.id}  Product=${JSON.stringify(s.Product)}`
-      ).join("\n");
-      setDebugResult(`SharePoint raw Product values (first 10 records):\n\n${products}`);
+      if (!data.success) { setDebugResult(`Error: ${data.error ?? JSON.stringify(data.steps)}`); return; }
+      const search = (data.steps?.productFieldSearch ?? []) as { id: string; productFields: Record<string, unknown> }[];
+      if (search.length === 0) {
+        setDebugResult("No recent records found, or product fields all empty.\n\nFull first item:\n" + JSON.stringify(data.steps?.sampleItemFields, null, 2));
+        return;
+      }
+      const lines = search.map((r) => {
+        const fields = Object.entries(r.productFields).map(([k, v]) => `  ${k} = ${JSON.stringify(v)}`).join("\n");
+        return `id=${r.id}:\n${fields || "  (no product-related fields found)"}`;
+      }).join("\n\n");
+      setDebugResult(`Product field scan (5 most recent records):\n\n${lines}`);
     } catch (err) {
       setDebugResult(err instanceof Error ? err.message : "Failed");
     }

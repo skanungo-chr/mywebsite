@@ -65,14 +65,30 @@ export async function GET(request: Request) {
       .filter((c) => !c.name.startsWith("_") && !["Edit", "LinkTitle", "LinkTitleNoMenu", "DocIcon", "ItemChildCount", "FolderChildCount", "AppAuthor", "AppEditor"].includes(c.name))
       .map((c) => ({ internalName: c.name, displayName: c.displayName }));
 
-    // Step 5: Fetch first item to see raw field values
+    // Step 5: Fetch 5 recent non-folder items with ALL fields (no $select) to find Product
     const itemsData = await graphFetch(
-      `/sites/${site.id}/lists/${cipList.id}/items?expand=fields&$top=1`,
+      `/sites/${site.id}/lists/${cipList.id}/items?$expand=fields&$filter=fields/ContentType ne 'Folder'&$orderby=fields/Submission_x0020_Date desc&$top=5`,
       token
     ) as { value: { id: string; fields: Record<string, unknown> }[] };
 
     if (itemsData.value.length > 0) {
+      // Show first item's full fields
       steps.sampleItemFields = itemsData.value[0].fields;
+      // Extract product-related fields across all 5 records
+      const KNOWN_PRODUCTS = ["OMNIA", "Omnia360", "OASIS FM", "Advanced Customer Portal", "Payment Processor", "Report Writer", "XML Invoice"];
+      steps.productFieldSearch = itemsData.value.map((item) => {
+        const productFields: Record<string, unknown> = {};
+        for (const [key, val] of Object.entries(item.fields)) {
+          const strVal = String(val ?? "");
+          if (
+            key.toLowerCase().includes("product") ||
+            KNOWN_PRODUCTS.some((p) => strVal.toLowerCase().includes(p.toLowerCase()))
+          ) {
+            productFields[key] = val;
+          }
+        }
+        return { id: item.id, productFields };
+      });
     } else {
       steps.sampleItemFields = "No items in list";
     }
