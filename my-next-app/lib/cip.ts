@@ -139,7 +139,7 @@ export async function fetchCIPRecordsPage(
     const fromDate = FETCH_FROM_YEARS[fromYear ?? "2025"] ?? FETCH_FROM_YEARS["2025"];
     const dateFilter = `fields/Submission_x0020_Date ge '${fromDate}'`;
     const folderFilter = `fields/ContentType ne 'Folder'`;
-    url = `/sites/${siteId}/lists/${listId}/items?expand=fields(select=${FIELDS_SELECT})&$filter=${folderFilter} and ${dateFilter}&$orderby=fields/Submission_x0020_Date desc&$top=25`;
+    url = `/sites/${siteId}/lists/${listId}/items?$expand=fields($select=${FIELDS_SELECT})&$filter=${folderFilter} and ${dateFilter}&$orderby=fields/Submission_x0020_Date desc&$top=25`;
   }
 
   const page = await graphFetch(url, token) as { value: SPItem[]; "@odata.nextLink"?: string };

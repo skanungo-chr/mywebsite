@@ -37,13 +37,14 @@ export async function GET(request: Request) {
     if (!cipList) return NextResponse.json({ error: "CIP list not found" }, { status: 404 });
 
     const items = await graphFetch(
-      `/sites/${site.id}/lists/${cipList.id}/items?expand=fields(select=Product,Change_x0020_Name,Category,formStatus,CIPStatuss)&$filter=fields/ContentType ne 'Folder'&$top=10`,
+      `/sites/${site.id}/lists/${cipList.id}/items?$expand=fields($select=Product,Change_x0020_Name,Category,formStatus,CIPStatuss,Submission_x0020_Date)&$filter=fields/ContentType ne 'Folder'&$orderby=fields/Submission_x0020_Date desc&$top=10`,
       token
     ) as { value: { id: string; fields: Record<string, unknown> }[] };
 
     return NextResponse.json({
       sample: items.value.map((i) => ({
         id: i.id,
+        SubmissionDate: i.fields.Submission_x0020_Date,
         Product: i.fields.Product,
         ClientName: i.fields.Change_x0020_Name,
         Category: i.fields.Category,
