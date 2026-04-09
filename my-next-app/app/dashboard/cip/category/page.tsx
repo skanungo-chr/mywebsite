@@ -55,12 +55,19 @@ function normalizeProduct(raw: string): string {
   return NORMALIZE[trimmed.toLowerCase()] ?? trimmed;
 }
 
+function formatMonth(ym: string): string {
+  const [y, m] = ym.split("-");
+  return new Date(Number(y), Number(m) - 1, 1).toLocaleString("default", { month: "short", year: "numeric" });
+}
+
 export default function CIPsByCategoryPage() {
   const [records, setRecords]                   = useState<CIPRecord[]>([]);
   const [loading, setLoading]                   = useState(true);
   const [selectedStatuses, setSelectedStatuses] = useState<string[]>([]);
   const [selectedClient, setSelectedClient]     = useState("All");
   const [selectedFormStatus, setSelectedFormStatus] = useState("All");
+  const [fromMonth, setFromMonth]               = useState("");
+  const [toMonth, setToMonth]                   = useState("");
 
   useEffect(() => {
     fetchCIPRecordsOnce().then((r) => { setRecords(r); setLoading(false); });
@@ -76,13 +83,25 @@ export default function CIPsByCategoryPage() {
     [records]
   );
 
+  // All months present in data, sorted
+  const availableMonths = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of records) {
+      if (r.submissionDate) set.add(r.submissionDate.slice(0, 7));
+    }
+    return [...set].sort();
+  }, [records]);
+
   const filtered = useMemo(() => records.filter((r) => {
     const matchStatus = selectedStatuses.length === 0 ||
       selectedStatuses.some((s) => r.cipStatus?.toLowerCase() === s.toLowerCase());
     const matchClient = selectedClient === "All" || r.clientName === selectedClient;
     const matchType   = selectedFormStatus === "All" || r.cipType === selectedFormStatus;
-    return matchStatus && matchClient && matchType;
-  }), [records, selectedStatuses, selectedClient, selectedFormStatus]);
+    const recMonth    = r.submissionDate ? r.submissionDate.slice(0, 7) : "";
+    const matchFrom   = fromMonth ? recMonth >= fromMonth : true;
+    const matchTo     = toMonth   ? recMonth <= toMonth   : true;
+    return matchStatus && matchClient && matchType && matchFrom && matchTo;
+  }), [records, selectedStatuses, selectedClient, selectedFormStatus, fromMonth, toMonth]);
 
   const chartData = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -111,12 +130,14 @@ export default function CIPsByCategoryPage() {
     denied:     filtered.filter((r) => r.cipStatus?.toLowerCase() === "denied").length,
   }), [filtered]);
 
-  const hasFilters = selectedStatuses.length > 0 || selectedClient !== "All" || selectedFormStatus !== "All";
+  const hasFilters = selectedStatuses.length > 0 || selectedClient !== "All" || selectedFormStatus !== "All" || !!fromMonth || !!toMonth;
 
   const resetFilters = () => {
     setSelectedStatuses([]);
     setSelectedClient("All");
     setSelectedFormStatus("All");
+    setFromMonth("");
+    setToMonth("");
   };
 
   const handleStatusToggle = (status: string) =>
@@ -287,6 +308,44 @@ export default function CIPsByCategoryPage() {
                 {formStatuses.map((f) => <option key={f} value={f} className="bg-gray-900">{f}</option>)}
               </select>
             </div>
+          </div>
+
+          {/* Month range filter */}
+          <div className="flex flex-wrap gap-4 items-end">
+            <div className="flex flex-col gap-1 min-w-0 flex-1">
+              <label className="text-xs text-gray-500 font-medium">From Month</label>
+              <select value={fromMonth} onChange={(e) => setFromMonth(e.target.value)}
+                disabled={loading}
+                className="bg-[#1a1f2e] border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500 w-full disabled:opacity-50 cursor-pointer">
+                <option value="">(All)</option>
+                {availableMonths.map((m) => (
+                  <option key={m} value={m} className="bg-gray-900">{formatMonth(m)}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-col gap-1 min-w-0 flex-1">
+              <label className="text-xs text-gray-500 font-medium">To Month</label>
+              <select value={toMonth} onChange={(e) => setToMonth(e.target.value)}
+                disabled={loading}
+                className="bg-[#1a1f2e] border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500 w-full disabled:opacity-50 cursor-pointer">
+                <option value="">(All)</option>
+                {availableMonths.map((m) => (
+                  <option key={m} value={m} className="bg-gray-900">{formatMonth(m)}</option>
+                ))}
+              </select>
+            </div>
+            {(fromMonth || toMonth) && (
+              <div className="flex flex-col gap-1 shrink-0">
+                <label className="text-xs text-gray-500 font-medium invisible">Clear</label>
+                <button onClick={() => { setFromMonth(""); setToMonth(""); }}
+                  className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-red-400 border border-gray-700 hover:border-red-500/40 px-3 py-2 rounded-lg transition-colors">
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                  Clear dates
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Chart */}
