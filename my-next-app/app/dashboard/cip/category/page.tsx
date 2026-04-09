@@ -1,12 +1,27 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, Fragment } from "react";
 import { fetchCIPRecordsOnce } from "@/lib/firestore";
 import { CIPRecord } from "@/lib/cip";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, LabelList, Cell,
 } from "recharts";
+
+const STATUS_BADGE_COLORS: Record<string, string> = {
+  approved:      "bg-emerald-900/40 text-emerald-400 border-emerald-700/50",
+  submitted:     "bg-blue-900/40 text-blue-400 border-blue-700/50",
+  draft:         "bg-yellow-900/40 text-yellow-400 border-yellow-700/50",
+  denied:        "bg-red-900/40 text-red-400 border-red-700/50",
+  cancelled:     "bg-gray-800/60 text-gray-400 border-gray-600/50",
+  "rolled back": "bg-orange-900/40 text-orange-400 border-orange-700/50",
+  failed:        "bg-red-900/60 text-red-300 border-red-600/50",
+  successful:    "bg-emerald-900/60 text-emerald-300 border-emerald-600/50",
+};
+
+function statusBadgeClass(status: string) {
+  return STATUS_BADGE_COLORS[status.toLowerCase()] ?? "bg-indigo-900/40 text-indigo-400 border-indigo-700/50";
+}
 
 const CIP_STATUSES = [
   "Approved", "Denied", "Draft", "Submitted",
@@ -68,6 +83,8 @@ export default function CIPsByCategoryPage() {
   const [selectedFormStatus, setSelectedFormStatus] = useState("All");
   const [fromMonth, setFromMonth]               = useState("");
   const [toMonth, setToMonth]                   = useState("");
+  const [expandedProducts, setExpandedProducts] = useState<Record<string, boolean>>({});
+  const [tableSearch, setTableSearch]           = useState("");
 
   useEffect(() => {
     fetchCIPRecordsOnce().then((r) => { setRecords(r); setLoading(false); });
@@ -118,6 +135,21 @@ export default function CIPsByCategoryPage() {
       .map(([product, count]) => ({ product, count }));
   }, [filtered]);
 
+  // Group filtered records by product, same sort order as chartData
+  const groupedData = useMemo(() => {
+    const map: Record<string, CIPRecord[]> = {};
+    for (const r of filtered) {
+      const key = normalizeProduct(r.product ?? "");
+      if (!map[key]) map[key] = [];
+      map[key].push(r);
+    }
+    return chartData.map(({ product, count }) => ({
+      product,
+      count,
+      records: map[product] ?? [],
+    }));
+  }, [filtered, chartData]);
+
   const grandTotal    = filtered.length;
   const blankCount    = chartData.find((d) => d.product === "(blank)")?.count ?? 0;
   const blankPct      = grandTotal > 0 ? Math.round((blankCount / grandTotal) * 100) : 0;
@@ -144,6 +176,12 @@ export default function CIPsByCategoryPage() {
     setSelectedStatuses((prev) =>
       prev.includes(status) ? prev.filter((s) => s !== status) : [...prev, status]
     );
+
+  const toggleProduct = (product: string) =>
+    setExpandedProducts((prev) => ({ ...prev, [product]: !prev[product] }));
+
+  const expandAll  = () => setExpandedProducts(Object.fromEntries(groupedData.map(({ product }) => [product, true])));
+  const collapseAll = () => setExpandedProducts({});
 
   const handleExportCSV = () => {
     const rows: (string | number)[][] = [
@@ -404,34 +442,145 @@ export default function CIPsByCategoryPage() {
             </div>
           )}
 
-          {/* Pivot table */}
-          {!loading && chartData.length > 0 && (
+          {/* Pivot table — accordion */}
+          {!loading && groupedData.length > 0 && (
             <div className="bg-[#111827] rounded-2xl border border-gray-800 overflow-hidden">
+
+              {/* Table toolbar */}
+              <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-gray-800 bg-gray-900/50">
+                <div className="relative flex-1 max-w-xs">
+                  <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 111 11a6 6 0 0116 0z" />
+                  </svg>
+                  <input
+                    type="text"
+                    placeholder="Search incidents…"
+                    value={tableSearch}
+                    onChange={(e) => setTableSearch(e.target.value)}
+                    className="w-full bg-[#1a1f2e] border border-gray-700 text-white text-xs rounded-lg pl-8 pr-3 py-1.5 focus:outline-none focus:border-indigo-500 placeholder:text-gray-600"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={expandAll}
+                    className="text-xs text-indigo-400 hover:text-indigo-300 border border-indigo-500/30 hover:border-indigo-500/60 px-3 py-1.5 rounded-lg transition-colors">
+                    Expand All
+                  </button>
+                  <button onClick={collapseAll}
+                    className="text-xs text-gray-400 hover:text-gray-200 border border-gray-700 hover:border-gray-500 px-3 py-1.5 rounded-lg transition-colors">
+                    Collapse All
+                  </button>
+                </div>
+              </div>
+
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-900 border-b border-gray-700">
+                    <th className="px-5 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider w-8" />
                     <th className="px-5 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">Products</th>
                     <th className="px-5 py-3 text-right text-xs font-semibold text-gray-400 uppercase tracking-wider">Count</th>
                     <th className="px-5 py-3 text-right text-xs font-semibold text-gray-400 uppercase tracking-wider">Grand Total</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-800/60">
-                  {chartData.map((row, i) => (
-                    <tr key={row.product}
-                      className={`hover:bg-gray-800/40 transition-colors ${i % 2 === 1 ? "bg-[#1a1f2e]/30" : ""}`}>
-                      <td className="px-5 py-3">
-                        <div className="flex items-center gap-2.5">
-                          <span className="w-3 h-3 rounded-sm shrink-0" style={{ background: colorFor(row.product) }} />
-                          <span className="text-gray-300">{row.product}</span>
-                        </div>
-                      </td>
-                      <td className="px-5 py-3 text-right text-gray-400 tabular-nums">{row.count.toLocaleString()}</td>
-                      <td className="px-5 py-3 text-right text-gray-200 font-medium tabular-nums">{row.count.toLocaleString()}</td>
-                    </tr>
-                  ))}
+                  {groupedData.map((row, i) => {
+                    const isOpen = !!expandedProducts[row.product];
+                    const searchLower = tableSearch.toLowerCase();
+                    const visibleRecords = tableSearch
+                      ? row.records.filter((r) =>
+                          r.chrTicketNumbers?.toLowerCase().includes(searchLower) ||
+                          r.clientName?.toLowerCase().includes(searchLower) ||
+                          r.cipStatus?.toLowerCase().includes(searchLower)
+                        )
+                      : row.records;
+
+                    return (
+                      <Fragment key={row.product}>
+                        {/* Product header row */}
+                        <tr
+                          onClick={() => toggleProduct(row.product)}
+                          className={`cursor-pointer select-none hover:bg-indigo-900/10 transition-colors ${
+                            i % 2 === 1 ? "bg-[#1a1f2e]/30" : ""
+                          } ${isOpen ? "bg-indigo-950/20" : ""}`}
+                        >
+                          <td className="pl-4 py-3 w-8">
+                            <svg
+                              className={`w-4 h-4 text-gray-500 transition-transform duration-150 ${isOpen ? "rotate-90" : ""}`}
+                              fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                            </svg>
+                          </td>
+                          <td className="px-5 py-3">
+                            <div className="flex items-center gap-2.5">
+                              <span className="w-3 h-3 rounded-sm shrink-0" style={{ background: colorFor(row.product) }} />
+                              <span className="text-gray-200 font-medium">{row.product}</span>
+                            </div>
+                          </td>
+                          <td className="px-5 py-3 text-right text-gray-400 tabular-nums">{row.count.toLocaleString()}</td>
+                          <td className="px-5 py-3 text-right text-gray-200 font-medium tabular-nums">{row.count.toLocaleString()}</td>
+                        </tr>
+
+                        {/* Expanded sub-rows */}
+                        {isOpen && (
+                          <Fragment key={`${row.product}__expanded`}>
+                            {/* Sub-header */}
+                            <tr key={`${row.product}__subhdr`} className="bg-gray-900/80 border-t border-gray-700/50">
+                              <td colSpan={4} className="px-0 py-0">
+                                <div className="grid grid-cols-[2rem_1fr_1fr_1fr] text-xs font-semibold text-gray-500 uppercase tracking-wider pl-12 pr-5 py-2 gap-3">
+                                  <span className="col-start-2">Incident No. / Date</span>
+                                  <span>Client</span>
+                                  <span>Status</span>
+                                </div>
+                              </td>
+                            </tr>
+                            {visibleRecords.length === 0 ? (
+                              <tr key={`${row.product}__empty`} className="bg-gray-900/40">
+                                <td colSpan={4} className="pl-12 py-3 text-xs text-gray-600 italic">
+                                  {tableSearch ? "No incidents match search." : "No records."}
+                                </td>
+                              </tr>
+                            ) : (
+                              visibleRecords.map((r) => (
+                                <tr key={r.id} className="bg-gray-900/40 hover:bg-gray-800/30 transition-colors border-t border-gray-800/40">
+                                  <td colSpan={4} className="px-0 py-0">
+                                    <div className="grid grid-cols-[2rem_1fr_1fr_1fr] items-center pl-12 pr-5 py-2.5 gap-3">
+                                      <div className="col-start-2 flex flex-col gap-0.5 min-w-0">
+                                        <span className="text-xs font-mono text-indigo-300 font-semibold truncate">
+                                          {r.chrTicketNumbers || "—"}
+                                        </span>
+                                        <span className="text-[10px] text-gray-600">
+                                          {r.submissionDate ? r.submissionDate.slice(0, 10) : "—"}
+                                          {r.emergencyFlag && (
+                                            <span className="ml-2 text-red-400 font-semibold">EMERGENCY</span>
+                                          )}
+                                        </span>
+                                      </div>
+                                      <span className="text-xs text-gray-300 truncate">
+                                        {r.clientName || <span className="text-gray-600 italic">—</span>}
+                                      </span>
+                                      <span>
+                                        {r.cipStatus ? (
+                                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${statusBadgeClass(r.cipStatus)}`}>
+                                            {r.cipStatus}
+                                          </span>
+                                        ) : (
+                                          <span className="text-gray-600 text-xs italic">—</span>
+                                        )}
+                                      </span>
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </Fragment>
+                        )}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
                 <tfoot>
                   <tr className="border-t-2 border-gray-600 bg-gray-900">
+                    <td className="px-5 py-3" />
                     <td className="px-5 py-3 font-bold text-white">Grand Total</td>
                     <td className="px-5 py-3 text-right font-bold text-white tabular-nums">{grandTotal.toLocaleString()}</td>
                     <td className="px-5 py-3 text-right font-bold text-white tabular-nums">{grandTotal.toLocaleString()}</td>
