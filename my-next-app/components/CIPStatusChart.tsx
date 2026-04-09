@@ -149,8 +149,8 @@ export default function CIPStatusChart({ records }: Props) {
       ) : (
         <div className="relative h-56">
           <canvas ref={canvasRef} />
-          {/* Centre label */}
-          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+          {/* Centre label — positioned over the donut (left ~55% of canvas, legend takes right) */}
+          <div className="absolute inset-y-0 left-0 w-[55%] flex flex-col items-center justify-center pointer-events-none">
             <span className="text-2xl font-bold text-white tabular-nums">{total.toLocaleString()}</span>
             <span className="text-xs text-gray-500">CIPs</span>
           </div>
