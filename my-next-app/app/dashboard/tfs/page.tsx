@@ -143,7 +143,11 @@ export default function TFSRecordsPage() {
     setIsNetworkError(false);
 
     try {
-      const res = await fetch(`/api/tfs?ids=${ids.join(",")}`);
+      const res = await fetch("/api/tfs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
 
       // Parse body — may be non-JSON if Vercel hit a platform-level timeout
       let data: Record<string, unknown> = {};

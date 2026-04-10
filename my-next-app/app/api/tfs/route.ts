@@ -4,12 +4,21 @@ import { fetchTFSWorkItemsByIds } from "@/lib/tfs";
 export const runtime    = "nodejs";
 export const maxDuration = 30;
 
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const idsParam = searchParams.get("ids");
+export async function POST(req: Request) {
+  let idsParam = "";
+  try {
+    const body = await req.json() as { ids?: string | number[] };
+    if (Array.isArray(body.ids)) {
+      idsParam = body.ids.join(",");
+    } else {
+      idsParam = String(body.ids ?? "");
+    }
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
 
-  if (!idsParam?.trim()) {
-    return NextResponse.json({ error: "ids parameter required" }, { status: 400 });
+  if (!idsParam.trim()) {
+    return NextResponse.json({ error: "ids required in request body" }, { status: 400 });
   }
 
   const ids = idsParam
