@@ -68,14 +68,24 @@ export async function fetchTFSWorkItemsByIds(ids: number[]): Promise<TFSWorkItem
       `&fields=${TFS_FIELDS}` +
       `&api-version=${apiVersion}`;
 
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Basic ${auth}`,
-        Accept:        "application/json",
-        "Content-Type": "application/json",
-      },
-      cache: "no-store",
-    });
+    // 8-second timeout — keeps us inside Vercel's 10s function limit
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          Authorization: `Basic ${auth}`,
+          Accept:        "application/json",
+          "Content-Type": "application/json",
+        },
+        cache: "no-store",
+      });
+    } finally {
+      clearTimeout(timer);
+    }
 
     if (!res.ok) {
       const errText = await res.text();

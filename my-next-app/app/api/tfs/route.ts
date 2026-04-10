@@ -44,7 +44,9 @@ export async function GET(req: Request) {
       message.includes("ENOTFOUND")    ||
       message.includes("ETIMEDOUT")    ||
       message.includes("ECONNRESET")   ||
-      message.includes("fetch failed");
+      message.includes("fetch failed") ||
+      message.includes("aborted")      ||    // AbortController timeout
+      (err instanceof Error && err.name === "AbortError");
 
     const status = isNetwork               ? 503
       : message.includes("401")            ? 401

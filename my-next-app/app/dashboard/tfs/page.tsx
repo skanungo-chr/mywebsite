@@ -143,19 +143,37 @@ export default function TFSRecordsPage() {
     setIsNetworkError(false);
 
     try {
-      const res  = await fetch(`/api/tfs?ids=${ids.join(",")}`);
-      const data = await res.json();
+      const res = await fetch(`/api/tfs?ids=${ids.join(",")}`);
 
-      if (!res.ok) {
-        setTfsError(data.error ?? "Unknown error");
-        setIsNetworkError(data.isNetwork ?? res.status === 503);
+      // Parse body — may be non-JSON if Vercel hit a platform-level timeout
+      let data: Record<string, unknown> = {};
+      const contentType = res.headers.get("content-type") ?? "";
+      if (contentType.includes("application/json")) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        // If it looks like a Vercel/Next timeout page, surface a clear message
+        if (res.status === 504 || res.status === 502) {
+          setTfsError(`Gateway timeout (${res.status}) — the TFS server did not respond in time.`);
+          setIsNetworkError(true);
+          return;
+        }
+        setTfsError(`Unexpected response (${res.status}): ${text.slice(0, 200)}`);
+        setIsNetworkError(res.status >= 500);
         return;
       }
 
-      setTfsItems(data.items ?? []);
+      if (!res.ok) {
+        setTfsError(String(data.error ?? "Unknown error"));
+        setIsNetworkError(Boolean(data.isNetwork) || res.status === 503);
+        return;
+      }
+
+      setTfsItems((data.items as TFSWorkItem[]) ?? []);
       setLastUpdated(new Date());
-    } catch {
-      setTfsError("Failed to reach the TFS API endpoint.");
+    } catch (e) {
+      setTfsError(e instanceof Error ? e.message : "Failed to call the TFS API endpoint.");
+      setIsNetworkError(false);
     } finally {
       setTfsLoading(false);
     }
