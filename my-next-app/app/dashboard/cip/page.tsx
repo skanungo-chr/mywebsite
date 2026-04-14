@@ -373,9 +373,8 @@ export default function CIPPage() {
             <CIPStatusChart records={filteredCIP} />
             <CIPsByProduct records={filteredCIP} />
           </div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
+          <div className="grid grid-cols-1 gap-5 mb-5">
             <CIPsByCompany records={filteredCIP} />
-            <CIPsByCategory records={filteredCIP} />
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-5">
             <CIPsByTFS records={filteredCIP} />
