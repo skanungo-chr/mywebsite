@@ -81,14 +81,40 @@ function shortenArea(area: string) {
   return p.length > 2 ? `…\\${p.slice(-2).join("\\")}` : area;
 }
 
-function extractTFSIds(cips: CIPRecord[]): number[] {
-  const ids = new Set<number>();
+// ─── Date range options ───────────────────────────────────────────────────────
+
+const DATE_RANGE_OPTIONS = [
+  { label: "Last 1 month",   months: 1  },
+  { label: "Last 3 months",  months: 3  },
+  { label: "Last 6 months",  months: 6  },
+  { label: "Last 12 months", months: 12 },
+  { label: "Last 24 months", months: 24 },
+  { label: "All time",       months: 0  },
+] as const;
+
+type DateRangeMonths = typeof DATE_RANGE_OPTIONS[number]["months"];
+
+function buildSinceDate(months: DateRangeMonths): string | null {
+  if (months === 0) return null;
+  const d = new Date();
+  d.setMonth(d.getMonth() - months);
+  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+}
+
+// ─── CIP cross-ref helper (still used for linking, not for fetching) ──────────
+
+function buildCipMap(cips: CIPRecord[]): Record<number, CIPRecord[]> {
+  const map: Record<number, CIPRecord[]> = {};
   for (const cip of cips) {
     const raw = String(cip.chrTicketNumbers ?? "");
     const matches = raw.match(/\d{4,6}/g);
-    if (matches) for (const m of matches) ids.add(parseInt(m, 10));
+    if (matches) for (const m of matches) {
+      const id = parseInt(m, 10);
+      if (!map[id]) map[id] = [];
+      map[id].push(cip);
+    }
   }
-  return [...ids];
+  return map;
 }
 
 function extractAssignedTo(raw: unknown): string {
@@ -104,41 +130,69 @@ function extractAssignedTo(raw: unknown): string {
   return "Unassigned";
 }
 
-// ─── Client-side TFS fetch ────────────────────────────────────────────────────
+// ─── Client-side TFS fetch (WIQL date-range → batch detail) ──────────────────
 
-async function fetchTFSItemsClient(
-  ids: number[],
-  config: TFSConfig
+async function tfsRequest(url: string, pat: string, options?: RequestInit): Promise<Response> {
+  const basicAuth = btoa(`:${pat}`);
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      Authorization: `Basic ${basicAuth}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      ...(options?.headers ?? {}),
+    },
+  });
+  if (res.status === 401 || res.status === 403) {
+    throw Object.assign(new Error("Authentication failed — check your PAT."), { code: "auth" });
+  }
+  const ct = res.headers.get("content-type") ?? "";
+  if (!res.ok) {
+    const body = ct.includes("application/json") ? JSON.stringify(await res.json()) : await res.text();
+    throw new Error(`TFS responded ${res.status}: ${body.slice(0, 300)}`);
+  }
+  if (!ct.includes("application/json")) {
+    const text = await res.text();
+    throw new Error(`Unexpected non-JSON response: ${text.slice(0, 200)}`);
+  }
+  return res;
+}
+
+async function fetchTFSByDateRange(
+  config: TFSConfig,
+  months: DateRangeMonths,
+  onProgress?: (loaded: number, total: number) => void
 ): Promise<TFSWorkItem[]> {
   const { baseUrl, collection, project, pat, apiVersion } = config;
-  const basicAuth = btoa(`:${pat}`);
+  const base = baseUrl.replace(/\/$/, "");
+  const sinceDate = buildSinceDate(months);
+
+  // Step 1 — WIQL query to get all matching IDs
+  const dateClause = sinceDate
+    ? ` AND [System.ChangedDate] >= '${sinceDate}'`
+    : "";
+  const wiql = {
+    query: `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '${project}'${dateClause} ORDER BY [System.ChangedDate] DESC`,
+  };
+
+  const wiqlUrl = `${base}/${collection}/_apis/wit/wiql?api-version=${apiVersion}`;
+  const wiqlRes = await tfsRequest(wiqlUrl, pat, {
+    method: "POST",
+    body: JSON.stringify(wiql),
+  });
+  const wiqlData = await wiqlRes.json() as { workItems?: { id: number }[] };
+  const ids = (wiqlData.workItems ?? []).map((w) => w.id);
+
+  if (ids.length === 0) return [];
+
+  // Step 2 — Batch fetch details (200 per request)
   const batchSize = 200;
   const all: TFSWorkItem[] = [];
 
   for (let i = 0; i < ids.length; i += batchSize) {
     const batch = ids.slice(i, i + batchSize);
-    const url = `${baseUrl.replace(/\/$/, "")}/${collection}/_apis/wit/workitems?ids=${batch.join(",")}&fields=${TFS_FIELDS}&api-version=${apiVersion}`;
-
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Basic ${basicAuth}`,
-        Accept: "application/json",
-      },
-    });
-
-    if (res.status === 401 || res.status === 403) {
-      throw Object.assign(new Error("Authentication failed — check your PAT."), { code: "auth" });
-    }
-    if (!res.ok) {
-      throw new Error(`TFS responded ${res.status}: ${res.statusText}`);
-    }
-
-    const ct = res.headers.get("content-type") ?? "";
-    if (!ct.includes("application/json")) {
-      const text = await res.text();
-      throw new Error(`Unexpected response (not JSON): ${text.slice(0, 200)}`);
-    }
-
+    const url = `${base}/${collection}/_apis/wit/workitems?ids=${batch.join(",")}&fields=${TFS_FIELDS}&api-version=${apiVersion}`;
+    const res = await tfsRequest(url, pat);
     const data = await res.json() as { value?: unknown[] };
     const items = (data.value ?? []) as Record<string, unknown>[];
 
@@ -158,9 +212,11 @@ async function fetchTFSItemsClient(
         areaPath:     String(f["System.AreaPath"] ?? ""),
         iteration:    String(f["System.IterationPath"] ?? ""),
         tags:         String(f["System.Tags"] ?? ""),
-        tfsUrl:       `${baseUrl.replace(/\/$/, "")}/${collection}/${project}/_workitems/edit/${id}`,
+        tfsUrl:       `${base}/${collection}/${project}/_workitems/edit/${id}`,
       });
     }
+
+    onProgress?.(Math.min(i + batchSize, ids.length), ids.length);
   }
 
   return all;
@@ -341,6 +397,10 @@ export default function TFSRecordsPage() {
   const [config, setConfig]           = useState<TFSConfig | null>(null);
   const [showConfig, setShowConfig]   = useState(false);
 
+  // Date range
+  const [dateRange, setDateRange] = useState<DateRangeMonths>(3);
+  const [loadProgress, setLoadProgress] = useState<{ loaded: number; total: number } | null>(null);
+
   // Filters
   const [search, setSearch]                 = useState("");
   const [selectedType, setSelectedType]     = useState("All");
@@ -364,32 +424,20 @@ export default function TFSRecordsPage() {
     fetchCIPRecordsOnce().then((r) => { setCipRecords(r); setCipLoading(false); });
   }, []);
 
-  // ── CIP → TFS cross-reference map ─────────────────────────────────────────
-  const cipMap = useMemo(() => {
-    const map: Record<number, CIPRecord[]> = {};
-    for (const cip of cipRecords) {
-      const raw = String(cip.chrTicketNumbers ?? "");
-      const matches = raw.match(/\d{4,6}/g);
-      if (matches) for (const m of matches) {
-        const id = parseInt(m, 10);
-        if (!map[id]) map[id] = [];
-        map[id].push(cip);
-      }
-    }
-    return map;
-  }, [cipRecords]);
+  // ── CIP → TFS cross-reference map (for linking, not for fetching) ───────────
+  const cipMap = useMemo(() => buildCipMap(cipRecords), [cipRecords]);
 
-  // ── Client-side TFS fetch ─────────────────────────────────────────────────
-  const fetchTFS = useCallback(async (cips: CIPRecord[], cfg: TFSConfig) => {
-    const ids = extractTFSIds(cips);
-    if (ids.length === 0) { setTfsLoading(false); return; }
-
+  // ── Client-side TFS fetch (WIQL date range) ───────────────────────────────
+  const fetchTFS = useCallback(async (cfg: TFSConfig, months: DateRangeMonths) => {
     setTfsLoading(true);
     setTfsError(null);
     setErrorCode(null);
+    setLoadProgress(null);
 
     try {
-      const items = await fetchTFSItemsClient(ids, cfg);
+      const items = await fetchTFSByDateRange(cfg, months, (loaded, total) => {
+        setLoadProgress({ loaded, total });
+      });
       setTfsItems(items);
       setLastUpdated(new Date());
     } catch (e) {
@@ -417,15 +465,15 @@ export default function TFSRecordsPage() {
       }
     } finally {
       setTfsLoading(false);
+      setLoadProgress(null);
     }
   }, []);
 
-  // Auto-fetch when CIP records + config are ready
+  // Auto-fetch when config is ready (CIP records only used for cross-ref, not gating)
   useEffect(() => {
-    if (!cipLoading && cipRecords.length > 0 && config) {
-      fetchTFS(cipRecords, config);
-    }
-  }, [cipLoading, cipRecords, config, fetchTFS]);
+    if (config) fetchTFS(config, dateRange);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config]); // intentionally only on config change; dateRange change handled by handleDateRangeChange
 
   // ── Save config ───────────────────────────────────────────────────────────
   const handleSaveConfig = (cfg: TFSConfig) => {
@@ -437,10 +485,16 @@ export default function TFSRecordsPage() {
     setErrorCode(null);
   };
 
+  // ── Date range change ─────────────────────────────────────────────────────
+  const handleDateRangeChange = (months: DateRangeMonths) => {
+    setDateRange(months);
+    if (config) fetchTFS(config, months);
+  };
+
   // ── Refresh ───────────────────────────────────────────────────────────────
   const handleRefresh = async () => {
     if (!config) return;
-    await fetchTFS(cipRecords, config);
+    await fetchTFS(config, dateRange);
     if (!tfsError) {
       setJustRefreshed(true);
       setTimeout(() => setJustRefreshed(false), 2000);
@@ -503,12 +557,35 @@ export default function TFSRecordsPage() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <div>
           <h2 className="text-xl font-bold text-white">TFS Records</h2>
           <p className="text-sm text-gray-500 mt-0.5">Azure DevOps — Omnia360Suite Project</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Date range selector */}
+          {config && !showConfig && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500 shrink-0">Show:</span>
+              <div className="flex rounded-lg border border-gray-700 overflow-hidden">
+                {DATE_RANGE_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.months}
+                    onClick={() => !loading && handleDateRangeChange(opt.months)}
+                    disabled={loading}
+                    className={`px-3 py-1.5 text-xs font-medium transition-colors border-r border-gray-700 last:border-r-0 disabled:cursor-not-allowed ${
+                      dateRange === opt.months
+                        ? "bg-indigo-600 text-white"
+                        : "bg-gray-900 text-gray-400 hover:bg-gray-800 hover:text-white"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {lastUpdated && (
             <span className={`text-xs transition-colors ${justRefreshed ? "text-green-400 font-medium" : "text-gray-500"}`}>
               {justRefreshed ? "Updated!" : `Synced at ${formatTime(lastUpdated)}`}
@@ -541,6 +618,22 @@ export default function TFSRecordsPage() {
           )}
         </div>
       </div>
+
+      {/* Loading progress bar */}
+      {loadProgress && (
+        <div className="mb-4">
+          <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+            <span>Loading work items…</span>
+            <span>{loadProgress.loaded} / {loadProgress.total}</span>
+          </div>
+          <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-indigo-500 rounded-full transition-all duration-300"
+              style={{ width: `${Math.round((loadProgress.loaded / loadProgress.total) * 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Config Panel */}
       {(!config || showConfig) && (
