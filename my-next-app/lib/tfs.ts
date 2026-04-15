@@ -41,7 +41,7 @@ function extractAssignedTo(val: unknown): string {
 
 function getConfig() {
   const pat        = process.env.AZURE_DEVOPS_PAT;
-  const baseUrl    = (process.env.AZURE_DEVOPS_URL ?? "").replace(/\/$/, "");
+  const baseUrl    = (process.env.AZURE_DEVOPS_URL ?? "").trim().replace(/\/+$/, "");
   const collection = process.env.AZURE_DEVOPS_COLLECTION;
   const project    = process.env.AZURE_DEVOPS_PROJECT;
   const apiVersion = process.env.AZURE_DEVOPS_API_VERSION ?? "2.0";
