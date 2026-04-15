@@ -4,29 +4,6 @@ import { useEffect, useState, useMemo, useCallback } from "react";
 import { fetchCIPRecordsOnce } from "@/lib/firestore";
 import { CIPRecord } from "@/lib/cip";
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const TFS_BASE_URL   = "http://devci01.dev.chrlab.int:8080/tfs";
-const TFS_COLLECTION = "CHR";
-const TFS_PROJECT    = "Omnia360Suite";
-const TFS_API_VER    = "2.0";
-const PAT_STORAGE_KEY = "tfs_pat";
-
-const TFS_FIELDS = [
-  "System.Id",
-  "System.Title",
-  "System.State",
-  "System.AssignedTo",
-  "System.WorkItemType",
-  "System.CreatedDate",
-  "System.ChangedDate",
-  "Microsoft.VSTS.Build.FoundIn",
-  "Microsoft.VSTS.Build.IntegrationBuild",
-  "System.Tags",
-  "System.AreaPath",
-  "System.IterationPath",
-].join(",");
-
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface TFSWorkItem {
@@ -97,65 +74,6 @@ function extractTFSIds(cips: CIPRecord[]): number[] {
   return [...ids];
 }
 
-function extractAssignedTo(val: unknown): string {
-  if (!val) return "Unassigned";
-  if (typeof val === "string") return val.replace(/<[^>]+>/, "").trim() || "Unassigned";
-  if (typeof val === "object") {
-    const o = val as Record<string, unknown>;
-    return String(o.displayName ?? o.uniqueName ?? "Unassigned").replace(/<[^>]+>/, "").trim();
-  }
-  return String(val).replace(/<[^>]+>/, "").trim();
-}
-
-/** Fetch TFS work items directly from the user's browser (avoids Vercel → TFS connectivity issue). */
-async function fetchTFSFromBrowser(ids: number[], pat: string): Promise<TFSWorkItem[]> {
-  const auth = btoa(`:${pat}`);
-  const results: TFSWorkItem[] = [];
-
-  for (let i = 0; i < ids.length; i += 200) {
-    const chunk = ids.slice(i, i + 200);
-    const url =
-      `${TFS_BASE_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/workitems` +
-      `?ids=${chunk.join(",")}` +
-      `&fields=${TFS_FIELDS}` +
-      `&api-version=${TFS_API_VER}`;
-
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Basic ${auth}`,
-        Accept: "application/json",
-      },
-    });
-
-    if (res.status === 401 || res.status === 403) throw new Error("AUTH");
-    if (!res.ok) throw new Error(`TFS returned ${res.status}`);
-
-    const data = await res.json() as {
-      value: Array<{ id: number; fields: Record<string, unknown> }>;
-    };
-
-    for (const item of data.value) {
-      const f = item.fields;
-      results.push({
-        id:           item.id,
-        title:        String(f["System.Title"]                          ?? ""),
-        status:       String(f["System.State"]                          ?? ""),
-        type:         String(f["System.WorkItemType"]                   ?? ""),
-        assignedTo:   extractAssignedTo(f["System.AssignedTo"]),
-        foundInBuild: String(f["Microsoft.VSTS.Build.FoundIn"]          ?? ""),
-        fixedInBuild: String(f["Microsoft.VSTS.Build.IntegrationBuild"] ?? ""),
-        createdDate:  f["System.CreatedDate"] ? String(f["System.CreatedDate"]) : null,
-        changedDate:  f["System.ChangedDate"] ? String(f["System.ChangedDate"]) : null,
-        areaPath:     String(f["System.AreaPath"]      ?? ""),
-        iteration:    String(f["System.IterationPath"] ?? ""),
-        tags:         String(f["System.Tags"]          ?? ""),
-        tfsUrl:       `${TFS_BASE_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_workitems/edit/${item.id}`,
-      });
-    }
-  }
-  return results;
-}
-
 // ─── Skeleton ─────────────────────────────────────────────────────────────────
 
 function SkeletonRow() {
@@ -170,75 +88,132 @@ function SkeletonRow() {
   );
 }
 
-// ─── PAT Setup Screen ─────────────────────────────────────────────────────────
+// ─── Tunnel Setup Guide ───────────────────────────────────────────────────────
 
-function PATSetupScreen({ onSave }: { onSave: (pat: string) => void }) {
-  const [pat, setPat] = useState("");
-  const [show, setShow] = useState(false);
+function TunnelSetupGuide({ onDismiss }: { onDismiss: () => void }) {
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const copy = (text: string, key: string) => {
+    navigator.clipboard.writeText(text);
+    setCopied(key);
+    setTimeout(() => setCopied(null), 2000);
+  };
+
+  const CodeBlock = ({ id, code }: { id: string; code: string }) => (
+    <div className="relative group bg-gray-950 border border-gray-700 rounded-lg px-4 py-3 mt-1.5">
+      <code className="text-xs text-green-400 font-mono break-all">{code}</code>
+      <button
+        onClick={() => copy(code, id)}
+        className="absolute right-2 top-2 text-gray-600 hover:text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity"
+      >
+        {copied === id ? (
+          <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+          </svg>
+        ) : (
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+          </svg>
+        )}
+      </button>
+    </div>
+  );
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] px-4">
-      <div className="w-full max-w-md bg-[#111827] border border-gray-800 rounded-2xl p-8">
-        {/* Icon */}
-        <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-indigo-600/10 border border-indigo-500/20 mx-auto mb-5">
-          <svg className="w-7 h-7 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
+    <div className="bg-[#111827] border border-amber-700/40 rounded-2xl overflow-hidden">
+      {/* Header */}
+      <div className="flex items-start justify-between px-6 py-5 border-b border-gray-800 bg-amber-900/10">
+        <div className="flex items-start gap-3">
+          <svg className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
           </svg>
+          <div>
+            <h3 className="text-sm font-bold text-amber-300">TFS server is not reachable from Vercel</h3>
+            <p className="text-xs text-amber-600 mt-0.5">
+              Your TFS server runs on HTTP (port 8080). Vercel is HTTPS. Browsers block HTTPS→HTTP requests — this cannot be fixed with CORS alone.
+            </p>
+          </div>
         </div>
-
-        <h2 className="text-lg font-bold text-white text-center mb-1">Connect to TFS</h2>
-        <p className="text-sm text-gray-500 text-center mb-6">
-          Enter your Personal Access Token to fetch work items directly from your browser.
-          Your token is stored locally and never sent to Vercel.
-        </p>
-
-        {/* How to get a PAT */}
-        <div className="bg-gray-900/60 border border-gray-800 rounded-xl p-4 mb-5 text-xs text-gray-400 space-y-1.5">
-          <p className="text-gray-300 font-semibold mb-2">How to get a PAT:</p>
-          <p>1. Open <code className="bg-gray-800 px-1 rounded text-indigo-300">http://devci01.dev.chrlab.int:8080/tfs</code> (on internal network or VPN)</p>
-          <p>2. Click your profile picture → <strong>Security</strong> → <strong>Personal Access Tokens</strong></p>
-          <p>3. Click <strong>Add</strong> → Name: <code className="bg-gray-800 px-1 rounded">CIPCenter</code> → Scope: <strong>Work Items (Read)</strong></p>
-          <p>4. Copy the generated token and paste below</p>
-        </div>
-
-        {/* PAT input */}
-        <div className="relative mb-4">
-          <input
-            type={show ? "text" : "password"}
-            placeholder="Paste your Personal Access Token…"
-            value={pat}
-            onChange={(e) => setPat(e.target.value)}
-            className="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-4 py-3 pr-10 focus:outline-none focus:border-indigo-500 placeholder:text-gray-600"
-          />
-          <button
-            type="button"
-            onClick={() => setShow((v) => !v)}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
-          >
-            {show ? (
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88" />
-              </svg>
-            ) : (
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-            )}
-          </button>
-        </div>
-
-        <button
-          onClick={() => pat.trim() && onSave(pat.trim())}
-          disabled={!pat.trim()}
-          className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-semibold py-3 rounded-lg transition-colors"
-        >
-          Connect to TFS
+        <button onClick={onDismiss} className="text-gray-600 hover:text-gray-400 shrink-0 ml-4 mt-0.5">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
         </button>
+      </div>
 
-        <p className="text-center text-xs text-gray-600 mt-4">
-          Token is saved in your browser only — never uploaded to Vercel or any server.
-        </p>
+      <div className="px-6 py-5 space-y-6">
+
+        {/* Option A — Cloudflare Tunnel (recommended) */}
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-xs font-bold bg-green-900/40 text-green-400 border border-green-700/50 px-2 py-0.5 rounded-full">RECOMMENDED</span>
+            <h4 className="text-sm font-semibold text-white">Option A — Cloudflare Tunnel (free, ~5 minutes)</h4>
+          </div>
+          <p className="text-xs text-gray-400 mb-3">
+            Run this once on the <strong className="text-gray-300">devci01 server</strong> (or any PC on the same internal network). No firewall changes needed.
+          </p>
+
+          <div className="space-y-3">
+            <div>
+              <p className="text-xs text-gray-500 font-medium">1. Download cloudflared on the TFS machine (PowerShell as Admin):</p>
+              <CodeBlock id="dl" code="winget install Cloudflare.cloudflared" />
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 font-medium">2. Start the tunnel (no account needed for quick tunnels):</p>
+              <CodeBlock id="tunnel" code="cloudflared tunnel --url http://localhost:8080" />
+            </div>
+            <div className="bg-gray-900/60 border border-gray-800 rounded-lg px-4 py-3 text-xs text-gray-400">
+              <p className="font-medium text-gray-300 mb-1">3. Copy the HTTPS URL it prints, e.g.:</p>
+              <code className="text-indigo-300">https://abc-def-123.trycloudflare.com</code>
+              <p className="mt-2">Then go to <strong className="text-gray-300">Vercel → Settings → Environment Variables</strong> and update:</p>
+              <div className="mt-1.5 space-y-1">
+                <div><code className="text-amber-300">AZURE_DEVOPS_URL</code> = <code className="text-green-300">https://abc-def-123.trycloudflare.com/tfs</code></div>
+              </div>
+              <p className="mt-2 text-gray-500">Then click <strong className="text-gray-400">Redeploy</strong> in Vercel, or run <code className="bg-gray-800 px-1 rounded">npx vercel --prod</code>.</p>
+            </div>
+            <p className="text-xs text-amber-600/80">
+              Note: The free trycloudflare.com URL changes each restart. For a permanent URL, create a free Cloudflare account and use a named tunnel.
+            </p>
+          </div>
+        </div>
+
+        <div className="border-t border-gray-800" />
+
+        {/* Option B — Run app locally */}
+        <div>
+          <h4 className="text-sm font-semibold text-white mb-2">Option B — Run the app locally on your work PC</h4>
+          <p className="text-xs text-gray-400 mb-3">
+            When running locally, the Next.js server makes the TFS call directly (server-to-server, no CORS or HTTPS issues).
+          </p>
+          <div className="space-y-2">
+            <div>
+              <p className="text-xs text-gray-500 font-medium">1. Clone &amp; install (one time):</p>
+              <CodeBlock id="install" code="git clone https://github.com/skanungo-chr/mywebsite.git && cd mywebsite/my-next-app && npm install" />
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 font-medium">2. Start the app:</p>
+              <CodeBlock id="dev" code="npm run dev" />
+            </div>
+            <p className="text-xs text-gray-500">Open <code className="bg-gray-800 px-1 rounded text-indigo-300">http://localhost:3000/dashboard/tfs</code> — TFS data loads automatically using the PAT already in <code className="bg-gray-800 px-1 rounded">.env.local</code>.</p>
+          </div>
+        </div>
+
+        <div className="border-t border-gray-800" />
+
+        {/* Option C — IIS CORS */}
+        <div>
+          <h4 className="text-sm font-semibold text-white mb-2">Option C — Add SSL + CORS to TFS IIS (ask IT admin)</h4>
+          <p className="text-xs text-gray-400 mb-2">
+            Requires adding an SSL certificate to IIS so TFS is served over <code className="bg-gray-800 px-1 rounded">https://</code>, then adding CORS headers.
+          </p>
+          <p className="text-xs text-gray-500">IIS Manager → your TFS site → HTTP Response Headers → add:</p>
+          <div className="bg-gray-950 border border-gray-700 rounded-lg px-4 py-3 mt-1.5 text-xs font-mono text-green-400 space-y-1">
+            <div>Access-Control-Allow-Origin: https://my-next-app-seven-neon.vercel.app</div>
+            <div>Access-Control-Allow-Headers: Authorization, Content-Type, Accept</div>
+            <div>Access-Control-Allow-Methods: GET, OPTIONS</div>
+          </div>
+        </div>
+
       </div>
     </div>
   );
@@ -247,14 +222,13 @@ function PATSetupScreen({ onSave }: { onSave: (pat: string) => void }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function TFSRecordsPage() {
-  const [pat, setPat]                         = useState<string | null>(null);
-  const [patReady, setPatReady]               = useState(false); // avoids flash before localStorage loads
   const [cipRecords, setCipRecords]           = useState<CIPRecord[]>([]);
   const [tfsItems, setTfsItems]               = useState<TFSWorkItem[]>([]);
   const [cipLoading, setCipLoading]           = useState(true);
   const [tfsLoading, setTfsLoading]           = useState(false);
   const [tfsError, setTfsError]               = useState<string | null>(null);
-  const [errorType, setErrorType]             = useState<"auth"|"cors"|"network"|"other"|null>(null);
+  const [errorType, setErrorType]             = useState<"auth"|"config"|"network"|"other"|null>(null);
+  const [showGuide, setShowGuide]             = useState(false);
   const [lastUpdated, setLastUpdated]         = useState<Date | null>(null);
   const [justRefreshed, setJustRefreshed]     = useState(false);
 
@@ -267,13 +241,6 @@ export default function TFSRecordsPage() {
 
   // Detail panel
   const [panelItem, setPanelItem]             = useState<TFSWorkItem | null>(null);
-
-  // ── Load PAT from localStorage ────────────────────────────────────────────
-  useEffect(() => {
-    const stored = localStorage.getItem(PAT_STORAGE_KEY);
-    setPat(stored);
-    setPatReady(true);
-  }, []);
 
   // ── Load CIP records ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -295,63 +262,75 @@ export default function TFSRecordsPage() {
     return map;
   }, [cipRecords]);
 
-  // ── Fetch TFS from browser ────────────────────────────────────────────────
-  const fetchTFS = useCallback(async (cips: CIPRecord[], token: string) => {
+  // ── Fetch TFS via server-side API route ───────────────────────────────────
+  const fetchTFS = useCallback(async (cips: CIPRecord[]) => {
     const ids = extractTFSIds(cips);
     if (ids.length === 0) { setTfsLoading(false); return; }
 
     setTfsLoading(true);
     setTfsError(null);
     setErrorType(null);
+    setShowGuide(false);
 
     try {
-      const items = await fetchTFSFromBrowser(ids, token);
-      setTfsItems(items);
+      const res = await fetch("/api/tfs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      });
+
+      let data: Record<string, unknown> = {};
+      const ct = res.headers.get("content-type") ?? "";
+      if (ct.includes("application/json")) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        if (res.status === 504 || res.status === 502) {
+          setTfsError("Gateway timeout — TFS did not respond in time.");
+          setErrorType("network");
+          setShowGuide(true);
+          return;
+        }
+        setTfsError(`Unexpected response (${res.status}): ${text.slice(0, 200)}`);
+        setErrorType("other");
+        return;
+      }
+
+      if (!res.ok) {
+        const msg = String(data.error ?? "Unknown error");
+        if (res.status === 401 || res.status === 403) {
+          setTfsError(msg); setErrorType("auth");
+        } else if (res.status === 500 && msg.includes("not configured")) {
+          setTfsError(msg); setErrorType("config");
+        } else if (res.status === 503 || Boolean(data.isNetwork)) {
+          setTfsError(msg); setErrorType("network"); setShowGuide(true);
+        } else {
+          setTfsError(msg); setErrorType("other");
+        }
+        return;
+      }
+
+      setTfsItems((data.items as TFSWorkItem[]) ?? []);
       setLastUpdated(new Date());
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (msg === "AUTH") {
-        setTfsError("Authentication failed. Your PAT may be expired or invalid.");
-        setErrorType("auth");
-      } else if (msg.toLowerCase().includes("failed to fetch") || msg.toLowerCase().includes("networkerror")) {
-        setTfsError(
-          "Cannot reach the TFS server from your browser. " +
-          "Make sure you are on the internal network or VPN, and that TFS allows cross-origin requests (CORS)."
-        );
-        setErrorType(msg.toLowerCase().includes("cors") ? "cors" : "network");
-      } else {
-        setTfsError(msg);
-        setErrorType("other");
-      }
+      setTfsError(e instanceof Error ? e.message : "Failed to call /api/tfs");
+      setErrorType("other");
     } finally {
       setTfsLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    if (!cipLoading && cipRecords.length > 0 && pat) fetchTFS(cipRecords, pat);
-  }, [cipLoading, cipRecords, pat, fetchTFS]);
-
-  // ── PAT management ────────────────────────────────────────────────────────
-  const handleSavePAT = (token: string) => {
-    localStorage.setItem(PAT_STORAGE_KEY, token);
-    setPat(token);
-  };
-
-  const handleClearPAT = () => {
-    localStorage.removeItem(PAT_STORAGE_KEY);
-    setPat(null);
-    setTfsItems([]);
-    setTfsError(null);
-    setErrorType(null);
-  };
+    if (!cipLoading && cipRecords.length > 0) fetchTFS(cipRecords);
+  }, [cipLoading, cipRecords, fetchTFS]);
 
   // ── Refresh ───────────────────────────────────────────────────────────────
   const handleRefresh = async () => {
-    if (!pat) return;
-    await fetchTFS(cipRecords, pat);
-    setJustRefreshed(true);
-    setTimeout(() => setJustRefreshed(false), 2000);
+    await fetchTFS(cipRecords);
+    if (!tfsError) {
+      setJustRefreshed(true);
+      setTimeout(() => setJustRefreshed(false), 2000);
+    }
   };
 
   // ── Derived data ──────────────────────────────────────────────────────────
@@ -399,28 +378,21 @@ export default function TFSRecordsPage() {
     const csv  = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url  = URL.createObjectURL(blob);
-    const a    = document.createElement("a");
-    a.href = url; a.download = `TFS_Records_${new Date().toISOString().slice(0,10)}.csv`; a.click();
+    const a    = document.createElement("a"); a.href = url;
+    a.download = `TFS_Records_${new Date().toISOString().slice(0,10)}.csv`; a.click();
     URL.revokeObjectURL(url);
   };
 
   const loading = cipLoading || tfsLoading;
 
   // ── Render ────────────────────────────────────────────────────────────────
-
-  // Wait for localStorage to load before deciding which screen to show
-  if (!patReady) return null;
-
-  // No PAT yet — show setup screen
-  if (!pat) return <PATSetupScreen onSave={handleSavePAT} />;
-
   return (
     <div>
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-xl font-bold text-white">TFS Records</h2>
-          <p className="text-sm text-gray-500 mt-0.5">Azure DevOps — Omnia360Suite · fetched from your browser</p>
+          <p className="text-sm text-gray-500 mt-0.5">Azure DevOps — Omnia360Suite Project</p>
         </div>
         <div className="flex items-center gap-3">
           {lastUpdated && (
@@ -438,10 +410,6 @@ export default function TFSRecordsPage() {
           <button onClick={handleExportCSV} disabled={loading || filtered.length === 0}
             className="text-sm bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded-lg transition-colors">
             Export CSV
-          </button>
-          <button onClick={handleClearPAT} title="Disconnect TFS"
-            className="text-xs text-gray-500 hover:text-red-400 border border-gray-700 hover:border-red-500/40 px-3 py-2 rounded-lg transition-colors">
-            Disconnect
           </button>
         </div>
       </div>
@@ -481,7 +449,7 @@ export default function TFSRecordsPage() {
       </div>
 
       {/* Error banner */}
-      {tfsError && (
+      {tfsError && !showGuide && (
         <div className="mb-5 px-4 py-4 rounded-xl bg-red-900/20 border border-red-700/40">
           <div className="flex items-start gap-3">
             <svg className="w-5 h-5 text-red-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -490,17 +458,13 @@ export default function TFSRecordsPage() {
             <div className="flex-1">
               {errorType === "auth" ? (
                 <>
-                  <p className="text-sm font-semibold text-red-300">PAT authentication failed</p>
-                  <p className="text-xs text-red-400 mt-1">Your token may have expired. Click <strong>Disconnect</strong> and re-enter a new PAT.</p>
+                  <p className="text-sm font-semibold text-red-300">TFS authentication failed</p>
+                  <p className="text-xs text-red-400 mt-1">The PAT stored in <code className="bg-red-900/30 px-1 rounded">AZURE_DEVOPS_PAT</code> on Vercel is expired or invalid. Generate a new one in TFS → Security → Personal Access Tokens.</p>
                 </>
-              ) : errorType === "network" || errorType === "cors" ? (
+              ) : errorType === "config" ? (
                 <>
-                  <p className="text-sm font-semibold text-red-300">Cannot reach TFS from your browser</p>
-                  <p className="text-xs text-red-400 mt-1">{tfsError}</p>
-                  <div className="mt-2 text-xs text-red-500/80 space-y-0.5">
-                    <p><span className="text-red-400 font-medium">Check:</span> Are you on the internal network or VPN?</p>
-                    <p><span className="text-red-400 font-medium">CORS:</span> Ask your IT admin to enable CORS on the TFS IIS server for <code className="bg-red-900/30 px-1 rounded">https://my-next-app-seven-neon.vercel.app</code></p>
-                  </div>
+                  <p className="text-sm font-semibold text-red-300">TFS environment variables missing</p>
+                  <p className="text-xs text-red-400 mt-1">Add <code className="bg-red-900/30 px-1 rounded font-mono">AZURE_DEVOPS_PAT</code>, <code className="bg-red-900/30 px-1 rounded font-mono">AZURE_DEVOPS_URL</code>, <code className="bg-red-900/30 px-1 rounded font-mono">AZURE_DEVOPS_COLLECTION</code>, <code className="bg-red-900/30 px-1 rounded font-mono">AZURE_DEVOPS_PROJECT</code> to Vercel environment variables.</p>
                 </>
               ) : (
                 <>
@@ -508,17 +472,42 @@ export default function TFSRecordsPage() {
                   <p className="text-xs text-red-400 mt-1 font-mono break-all">{tfsError}</p>
                 </>
               )}
-              <button onClick={handleRefresh} disabled={loading}
-                className="mt-2 text-xs text-red-300 hover:text-red-200 underline underline-offset-2 disabled:opacity-50">
-                Retry
-              </button>
+              <div className="flex items-center gap-3 mt-2">
+                <button onClick={handleRefresh} disabled={loading}
+                  className="text-xs text-red-300 hover:text-red-200 underline underline-offset-2 disabled:opacity-50">
+                  Retry
+                </button>
+                <button onClick={() => setShowGuide(true)}
+                  className="text-xs text-amber-400 hover:text-amber-300 underline underline-offset-2">
+                  View setup guide
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Filters */}
-      {!tfsError && (
+      {/* Tunnel setup guide */}
+      {showGuide && (
+        <div className="mb-6">
+          <TunnelSetupGuide onDismiss={() => setShowGuide(false)} />
+          <div className="mt-3 flex items-center gap-3">
+            <button onClick={handleRefresh} disabled={loading}
+              className="text-sm bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 px-4 py-2 rounded-lg transition-colors flex items-center gap-2">
+              <svg className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              Try again after setup
+            </button>
+            <button onClick={() => setShowGuide(false)} className="text-xs text-gray-500 hover:text-gray-300 underline underline-offset-2">
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Filters — only show when data loaded */}
+      {!tfsError && !showGuide && (
         <div className="flex flex-wrap gap-3 mb-4 items-center">
           <div className="relative flex-1 min-w-[200px] max-w-xs">
             <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -564,7 +553,7 @@ export default function TFSRecordsPage() {
       )}
 
       {/* Table */}
-      {!tfsError && (
+      {!tfsError && !showGuide && (
         <div className="bg-[#111827] rounded-2xl border border-gray-800 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm min-w-[900px]">
@@ -671,8 +660,8 @@ export default function TFSRecordsPage() {
                     </div>
                   </div>
                   <div><p className="text-gray-500 mb-0.5">Assigned To</p><p className="text-gray-200 truncate">{panelItem.assignedTo}</p></div>
-                  <div><p className="text-gray-500 mb-0.5">Found In Build</p><p className="text-gray-200 font-mono">{panelItem.foundInBuild||"—"}</p></div>
-                  <div><p className="text-gray-500 mb-0.5">Fixed In Build</p><p className="text-gray-200 font-mono">{panelItem.fixedInBuild||"—"}</p></div>
+                  <div><p className="text-gray-500 mb-0.5">Found In</p><p className="text-gray-200 font-mono">{panelItem.foundInBuild||"—"}</p></div>
+                  <div><p className="text-gray-500 mb-0.5">Fixed In</p><p className="text-gray-200 font-mono">{panelItem.fixedInBuild||"—"}</p></div>
                   <div className="col-span-2"><p className="text-gray-500 mb-0.5">Area Path</p><p className="text-gray-400 font-mono text-[10px] break-all">{panelItem.areaPath||"—"}</p></div>
                   <div className="col-span-2"><p className="text-gray-500 mb-0.5">Iteration</p><p className="text-gray-400 font-mono text-[10px] break-all">{panelItem.iteration||"—"}</p></div>
                   {panelItem.tags && (
