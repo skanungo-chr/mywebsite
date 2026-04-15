@@ -23,7 +23,7 @@ interface TFSWorkItem {
 }
 
 interface TFSConfig {
-  baseUrl:    string;   // e.g. http://devci01.dev.chrlab.int:8080/tfs
+  baseUrl:    string;   // e.g. https://ado.chrsolutions.com/tfs
   collection: string;   // e.g. DefaultCollection
   project:    string;   // e.g. Omnia360Suite
   pat:        string;
@@ -194,8 +194,8 @@ function ConfigPanel({
   showCancel: boolean;
 }) {
   const [form, setForm] = useState<TFSConfig>({
-    baseUrl:    initial.baseUrl    ?? "http://devci01.dev.chrlab.int:8080/tfs",
-    collection: initial.collection ?? "DefaultCollection",
+    baseUrl:    initial.baseUrl    ?? "https://ado.chrsolutions.com/tfs",
+    collection: initial.collection ?? "CHR",
     project:    initial.project    ?? "Omnia360Suite",
     pat:        initial.pat        ?? "",
     apiVersion: initial.apiVersion ?? "2.0",
@@ -231,7 +231,7 @@ function ConfigPanel({
               type="text"
               value={form.baseUrl}
               onChange={set("baseUrl")}
-              placeholder="http://devci01.dev.chrlab.int:8080/tfs"
+              placeholder="https://ado.chrsolutions.com/tfs"
               className="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2.5 focus:outline-none focus:border-indigo-500 placeholder:text-gray-600 font-mono"
             />
             <p className="text-xs text-gray-600 mt-1">Include /tfs at the end if your TFS uses that path.</p>
