@@ -107,6 +107,8 @@ export default function TFSRecordsPage() {
   const [tfsLoading, setTfsLoading]       = useState(false);
   const [tfsError, setTfsError]           = useState<string | null>(null);
   const [errorCode, setErrorCode]         = useState<"auth"|"config"|"network"|"other"|null>(null);
+  const [networkReason, setNetworkReason] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics]     = useState<Record<string, string> | null>(null);
   const [lastUpdated, setLastUpdated]     = useState<Date | null>(null);
   const [justRefreshed, setJustRefreshed] = useState(false);
 
@@ -136,6 +138,8 @@ export default function TFSRecordsPage() {
     setTfsLoading(true);
     setTfsError(null);
     setErrorCode(null);
+    setNetworkReason(null);
+    setDiagnostics(null);
 
     try {
       const res = await fetch("/api/tfs", {
@@ -166,7 +170,10 @@ export default function TFSRecordsPage() {
         } else if (res.status === 500 && msg.includes("not configured")) {
           setTfsError(msg); setErrorCode("config");
         } else if (res.status === 503 || Boolean(data.isNetwork)) {
-          setTfsError(msg); setErrorCode("network");
+          setTfsError(msg);
+          setErrorCode("network");
+          if (data.networkReason) setNetworkReason(String(data.networkReason));
+          if (data.diagnostics)   setDiagnostics(data.diagnostics as Record<string, string>);
         } else {
           setTfsError(msg); setErrorCode("other");
         }
@@ -369,7 +376,28 @@ export default function TFSRecordsPage() {
               ) : errorCode === "network" ? (
                 <>
                   <p className="text-sm font-semibold text-amber-300">Cannot reach TFS server</p>
-                  <p className="text-xs text-amber-500/90 mt-1 font-mono break-all">{tfsError}</p>
+                  {networkReason && (
+                    <p className="text-xs text-amber-400 mt-1 font-medium">{networkReason}</p>
+                  )}
+                  <p className="text-xs text-amber-600/80 mt-1 font-mono break-all">{tfsError}</p>
+                  {diagnostics && (
+                    <div className="mt-3 bg-gray-900/60 border border-amber-800/30 rounded-lg px-3 py-3 space-y-1.5">
+                      <p className="text-xs font-semibold text-amber-400/80 uppercase tracking-wider mb-2">Connection diagnostics</p>
+                      {[
+                        ["TFS URL",     diagnostics.url],
+                        ["Collection",  diagnostics.collection],
+                        ["Project",     diagnostics.project],
+                        ["API Version", diagnostics.apiVersion],
+                        ["PAT",         diagnostics.pat],
+                        ["WIQL endpoint tried", diagnostics.endpoint],
+                      ].map(([label, value]) => (
+                        <div key={label} className="flex gap-2 text-xs">
+                          <span className="text-gray-500 shrink-0 w-36">{label}:</span>
+                          <span className={`font-mono break-all ${value?.includes("not set") ? "text-red-400" : "text-gray-300"}`}>{value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </>
               ) : (
                 <>

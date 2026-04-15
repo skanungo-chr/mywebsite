@@ -13,6 +13,28 @@ export async function POST(req: Request) {
     // no body — use default
   }
 
+  // Collect config diagnostics (mask PAT)
+  const cfgUrl        = process.env.AZURE_DEVOPS_URL        ?? "(not set)";
+  const cfgCollection = process.env.AZURE_DEVOPS_COLLECTION ?? "(not set)";
+  const cfgProject    = process.env.AZURE_DEVOPS_PROJECT    ?? "(not set)";
+  const cfgApiVersion = process.env.AZURE_DEVOPS_API_VERSION ?? "2.0 (default)";
+  const cfgPat        = process.env.AZURE_DEVOPS_PAT
+    ? `set (${process.env.AZURE_DEVOPS_PAT.length} chars)`
+    : "(not set)";
+
+  const wiqlEndpoint = cfgUrl !== "(not set)" && cfgCollection !== "(not set)"
+    ? `${cfgUrl.replace(/\/$/, "")}/${cfgCollection}/_apis/wit/wiql?api-version=${cfgApiVersion}`
+    : "(cannot build — missing URL or collection)";
+
+  const diagnostics = {
+    url:        cfgUrl,
+    collection: cfgCollection,
+    project:    cfgProject,
+    apiVersion: cfgApiVersion,
+    pat:        cfgPat,
+    endpoint:   wiqlEndpoint,
+  };
+
   try {
     const items = await fetchTFSByDateRange(months);
 
@@ -29,15 +51,22 @@ export async function POST(req: Request) {
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const errName = err instanceof Error ? err.name : "";
 
-    const isNetwork =
-      message.includes("ECONNREFUSED") ||
-      message.includes("ENOTFOUND")    ||
-      message.includes("ETIMEDOUT")    ||
-      message.includes("ECONNRESET")   ||
-      message.includes("fetch failed") ||
-      message.includes("aborted")      ||
-      (err instanceof Error && err.name === "AbortError");
+    const isECONNREFUSED = message.includes("ECONNREFUSED");
+    const isENOTFOUND    = message.includes("ENOTFOUND");
+    const isETIMEDOUT    = message.includes("ETIMEDOUT") || message.includes("aborted") || errName === "AbortError";
+    const isECONNRESET   = message.includes("ECONNRESET");
+    const isFetchFailed  = message.includes("fetch failed");
+
+    const isNetwork = isECONNREFUSED || isENOTFOUND || isETIMEDOUT || isECONNRESET || isFetchFailed;
+
+    let networkReason = "";
+    if (isENOTFOUND)    networkReason = "DNS resolution failed — hostname not found";
+    else if (isECONNREFUSED) networkReason = "Connection refused — server is not listening on that port";
+    else if (isETIMEDOUT)    networkReason = "Connection timed out — server did not respond in time";
+    else if (isECONNRESET)   networkReason = "Connection reset — server closed the connection unexpectedly";
+    else if (isFetchFailed)  networkReason = "Fetch failed — network-level error reaching the server";
 
     const status = isNetwork                          ? 503
       : message.includes("401")                      ? 401
@@ -45,6 +74,9 @@ export async function POST(req: Request) {
       : message.includes("not configured")           ? 500
       : 502;
 
-    return NextResponse.json({ error: message, isNetwork }, { status });
+    return NextResponse.json(
+      { error: message, isNetwork, networkReason, diagnostics },
+      { status }
+    );
   }
 }
