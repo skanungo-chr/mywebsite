@@ -41,10 +41,10 @@ function extractAssignedTo(val: unknown): string {
 
 function getConfig() {
   const pat        = process.env.AZURE_DEVOPS_PAT;
-  const baseUrl    = (process.env.AZURE_DEVOPS_URL ?? "").trim().replace(/\/+$/, "");
-  const collection = process.env.AZURE_DEVOPS_COLLECTION;
-  const project    = process.env.AZURE_DEVOPS_PROJECT;
-  const apiVersion = process.env.AZURE_DEVOPS_API_VERSION ?? "2.0";
+  const baseUrl    = (process.env.AZURE_DEVOPS_URL        ?? "").trim().replace(/\/+$/, "");
+  const collection = (process.env.AZURE_DEVOPS_COLLECTION ?? "").trim();
+  const project    = (process.env.AZURE_DEVOPS_PROJECT    ?? "").trim();
+  const apiVersion = (process.env.AZURE_DEVOPS_API_VERSION ?? "2.0").trim();
 
   if (!pat || !baseUrl || !collection || !project) {
     throw new Error(

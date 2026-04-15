@@ -14,10 +14,10 @@ export async function POST(req: Request) {
   }
 
   // Collect config diagnostics (mask PAT)
-  const cfgUrl        = (process.env.AZURE_DEVOPS_URL ?? "").trim() || "(not set)";
-  const cfgCollection = process.env.AZURE_DEVOPS_COLLECTION ?? "(not set)";
-  const cfgProject    = process.env.AZURE_DEVOPS_PROJECT    ?? "(not set)";
-  const cfgApiVersion = process.env.AZURE_DEVOPS_API_VERSION ?? "2.0 (default)";
+  const cfgUrl        = (process.env.AZURE_DEVOPS_URL        ?? "").trim() || "(not set)";
+  const cfgCollection = (process.env.AZURE_DEVOPS_COLLECTION ?? "").trim() || "(not set)";
+  const cfgProject    = (process.env.AZURE_DEVOPS_PROJECT    ?? "").trim() || "(not set)";
+  const cfgApiVersion = (process.env.AZURE_DEVOPS_API_VERSION ?? "").trim() || "2.0 (default)";
   const cfgPat        = process.env.AZURE_DEVOPS_PAT
     ? `set (${process.env.AZURE_DEVOPS_PAT.length} chars)`
     : "(not set)";
