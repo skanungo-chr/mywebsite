@@ -57,16 +57,18 @@ export async function POST(req: Request) {
     const isENOTFOUND    = message.includes("ENOTFOUND");
     const isETIMEDOUT    = message.includes("ETIMEDOUT") || message.includes("aborted") || errName === "AbortError";
     const isECONNRESET   = message.includes("ECONNRESET");
+    const isSSL          = message.includes("CERT") || message.includes("SSL") || message.includes("certificate") || message.includes("self-signed");
     const isFetchFailed  = message.includes("fetch failed");
 
-    const isNetwork = isECONNREFUSED || isENOTFOUND || isETIMEDOUT || isECONNRESET || isFetchFailed;
+    const isNetwork = isECONNREFUSED || isENOTFOUND || isETIMEDOUT || isECONNRESET || isSSL || isFetchFailed;
 
     let networkReason = "";
-    if (isENOTFOUND)    networkReason = "DNS resolution failed — hostname not found";
-    else if (isECONNREFUSED) networkReason = "Connection refused — server is not listening on that port";
-    else if (isETIMEDOUT)    networkReason = "Connection timed out — server did not respond in time";
-    else if (isECONNRESET)   networkReason = "Connection reset — server closed the connection unexpectedly";
-    else if (isFetchFailed)  networkReason = "Fetch failed — network-level error reaching the server";
+    if (isENOTFOUND)         networkReason = "DNS resolution failed — hostname not found. Vercel cannot resolve this domain. The server may be internal/private only.";
+    else if (isECONNREFUSED) networkReason = "Connection refused — Vercel reached the host but the port is closed or not listening.";
+    else if (isETIMEDOUT)    networkReason = "Connection timed out — Vercel could not reach the server. It may be behind a firewall blocking external access.";
+    else if (isECONNRESET)   networkReason = "Connection reset — server closed the connection unexpectedly.";
+    else if (isSSL)          networkReason = "SSL/TLS certificate error — the server's certificate may be self-signed or use an internal CA not trusted by Vercel.";
+    else if (isFetchFailed)  networkReason = "Network-level error — Vercel cloud servers cannot reach this TFS host. It may be on a private/internal network.";
 
     const status = isNetwork                          ? 503
       : message.includes("401")                      ? 401

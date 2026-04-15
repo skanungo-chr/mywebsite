@@ -70,6 +70,13 @@ async function tfsGet(url: string, auth: string): Promise<Response> {
       cache: "no-store",
     });
     return res;
+  } catch (err) {
+    const cause = (err as { cause?: { message?: string; code?: string } })?.cause;
+    if (cause) {
+      const detail = [cause.code, cause.message].filter(Boolean).join(": ");
+      throw new Error(`fetch failed — ${detail} (URL: ${url})`);
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
@@ -91,6 +98,14 @@ async function tfsPost(url: string, auth: string, body: unknown): Promise<Respon
       cache: "no-store",
     });
     return res;
+  } catch (err) {
+    // Enrich generic "fetch failed" with the underlying cause
+    const cause = (err as { cause?: { message?: string; code?: string } })?.cause;
+    if (cause) {
+      const detail = [cause.code, cause.message].filter(Boolean).join(": ");
+      throw new Error(`fetch failed — ${detail} (URL: ${url})`);
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
   }
