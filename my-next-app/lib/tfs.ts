@@ -31,7 +31,6 @@ const TFS_FIELDS = [
 
 function extractAssignedTo(val: unknown): string {
   if (!val) return "Unassigned";
-  // TFS 2.0: string "Display Name <email>", newer: object { displayName }
   if (typeof val === "string") return val.replace(/<[^>]+>/, "").trim() || "Unassigned";
   if (typeof val === "object") {
     const o = val as Record<string, unknown>;
@@ -40,9 +39,7 @@ function extractAssignedTo(val: unknown): string {
   return String(val).replace(/<[^>]+>/, "").trim();
 }
 
-export async function fetchTFSWorkItemsByIds(ids: number[]): Promise<TFSWorkItem[]> {
-  if (ids.length === 0) return [];
-
+function getConfig() {
   const pat        = process.env.AZURE_DEVOPS_PAT;
   const baseUrl    = (process.env.AZURE_DEVOPS_URL ?? "").replace(/\/$/, "");
   const collection = process.env.AZURE_DEVOPS_COLLECTION;
@@ -56,36 +53,68 @@ export async function fetchTFSWorkItemsByIds(ids: number[]): Promise<TFSWorkItem
     );
   }
 
-  const auth = Buffer.from(`:${pat}`).toString("base64");
+  return { pat, baseUrl, collection, project, apiVersion };
+}
+
+async function tfsGet(url: string, auth: string): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        Authorization: `Basic ${auth}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      cache: "no-store",
+    });
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function tfsPost(url: string, auth: string, body: unknown): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        Authorization: `Basic ${auth}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      cache: "no-store",
+    });
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchItemsByIds(
+  ids: number[],
+  auth: string,
+  baseUrl: string,
+  collection: string,
+  project: string,
+  apiVersion: string
+): Promise<TFSWorkItem[]> {
   const results: TFSWorkItem[] = [];
 
-  // TFS on-premise API supports max 200 IDs per batch
   for (let i = 0; i < ids.length; i += 200) {
     const chunk = ids.slice(i, i + 200);
     const url =
-      `${baseUrl}/${collection}/${project}/_apis/wit/workitems` +
+      `${baseUrl}/${collection}/_apis/wit/workitems` +
       `?ids=${chunk.join(",")}` +
       `&fields=${TFS_FIELDS}` +
       `&api-version=${apiVersion}`;
 
-    // 8-second timeout — keeps us inside Vercel's 10s function limit
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          Authorization: `Basic ${auth}`,
-          Accept:        "application/json",
-          "Content-Type": "application/json",
-        },
-        cache: "no-store",
-      });
-    } finally {
-      clearTimeout(timer);
-    }
+    const res = await tfsGet(url, auth);
 
     if (!res.ok) {
       const errText = await res.text();
@@ -117,6 +146,49 @@ export async function fetchTFSWorkItemsByIds(ids: number[]): Promise<TFSWorkItem
   }
 
   return results;
+}
+
+/** Fetch TFS work items modified within the last N months using WIQL. months=0 means all time. */
+export async function fetchTFSByDateRange(months: number): Promise<TFSWorkItem[]> {
+  const { pat, baseUrl, collection, project, apiVersion } = getConfig();
+  const auth = Buffer.from(`:${pat}`).toString("base64");
+
+  // Step 1 — WIQL to get IDs
+  const dateClause = months > 0
+    ? (() => {
+        const d = new Date();
+        d.setMonth(d.getMonth() - months);
+        return ` AND [System.ChangedDate] >= '${d.toISOString().slice(0, 10)}'`;
+      })()
+    : "";
+
+  const wiql = {
+    query: `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '${project}'${dateClause} ORDER BY [System.ChangedDate] DESC`,
+  };
+
+  const wiqlUrl = `${baseUrl}/${collection}/_apis/wit/wiql?api-version=${apiVersion}`;
+  const wiqlRes = await tfsPost(wiqlUrl, auth, wiql);
+
+  if (!wiqlRes.ok) {
+    const errText = await wiqlRes.text();
+    throw new Error(`TFS WIQL ${wiqlRes.status}: ${errText}`);
+  }
+
+  const wiqlData = await wiqlRes.json() as { workItems?: { id: number }[] };
+  const ids = (wiqlData.workItems ?? []).map((w) => w.id);
+
+  if (ids.length === 0) return [];
+
+  // Step 2 — batch fetch details
+  return fetchItemsByIds(ids, auth, baseUrl, collection, project, apiVersion);
+}
+
+/** Fetch specific TFS work items by ID list. */
+export async function fetchTFSWorkItemsByIds(ids: number[]): Promise<TFSWorkItem[]> {
+  if (ids.length === 0) return [];
+  const { pat, baseUrl, collection, project, apiVersion } = getConfig();
+  const auth = Buffer.from(`:${pat}`).toString("base64");
+  return fetchItemsByIds(ids, auth, baseUrl, collection, project, apiVersion);
 }
 
 /** Extract all TFS numeric IDs (4-6 digits) from CIP chrTicketNumbers fields. */

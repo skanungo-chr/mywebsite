@@ -1,37 +1,20 @@
 import { NextResponse } from "next/server";
-import { fetchTFSWorkItemsByIds } from "@/lib/tfs";
+import { fetchTFSByDateRange } from "@/lib/tfs";
 
-export const runtime    = "nodejs";
-export const maxDuration = 30;
+export const runtime     = "nodejs";
+export const maxDuration = 60;
 
 export async function POST(req: Request) {
-  let idsParam = "";
+  let months = 3; // default: last 3 months
   try {
-    const body = await req.json() as { ids?: string | number[] };
-    if (Array.isArray(body.ids)) {
-      idsParam = body.ids.join(",");
-    } else {
-      idsParam = String(body.ids ?? "");
-    }
+    const body = await req.json() as { months?: number };
+    if (typeof body.months === "number") months = body.months;
   } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
-
-  if (!idsParam.trim()) {
-    return NextResponse.json({ error: "ids required in request body" }, { status: 400 });
-  }
-
-  const ids = idsParam
-    .split(",")
-    .map((s) => parseInt(s.trim(), 10))
-    .filter((n) => !isNaN(n) && n > 0);
-
-  if (ids.length === 0) {
-    return NextResponse.json({ items: [], total: 0, byType: {}, byStatus: {} });
+    // no body — use default
   }
 
   try {
-    const items = await fetchTFSWorkItemsByIds(ids);
+    const items = await fetchTFSByDateRange(months);
 
     const byType:   Record<string, number> = {};
     const byStatus: Record<string, number> = {};
@@ -42,27 +25,24 @@ export async function POST(req: Request) {
 
     return NextResponse.json(
       { items, total: items.length, byType, byStatus },
-      { headers: { "Cache-Control": "public, s-maxage=300, stale-while-revalidate=60" } }
+      { headers: { "Cache-Control": "no-store" } }
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
 
-    // Distinguish on-premise network errors from authentication/API errors
     const isNetwork =
       message.includes("ECONNREFUSED") ||
       message.includes("ENOTFOUND")    ||
       message.includes("ETIMEDOUT")    ||
       message.includes("ECONNRESET")   ||
       message.includes("fetch failed") ||
-      message.includes("aborted")      ||    // AbortController timeout
+      message.includes("aborted")      ||
       (err instanceof Error && err.name === "AbortError");
 
-    const status = isNetwork               ? 503
-      : message.includes("401")            ? 401
-      : message.includes("403")            ? 403
-      : message.includes("404")            ? 404
-      : message.includes("429")            ? 429
-      : message.includes("not configured") ? 500
+    const status = isNetwork                          ? 503
+      : message.includes("401")                      ? 401
+      : message.includes("403")                      ? 403
+      : message.includes("not configured")           ? 500
       : 502;
 
     return NextResponse.json({ error: message, isNetwork }, { status });

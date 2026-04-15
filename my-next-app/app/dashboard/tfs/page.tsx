@@ -22,29 +22,18 @@ interface TFSWorkItem {
   tfsUrl:       string;
 }
 
-interface TFSConfig {
-  baseUrl:    string;   // e.g. https://ado.chrsolutions.com/tfs
-  collection: string;   // e.g. DefaultCollection
-  project:    string;   // e.g. Omnia360Suite
-  pat:        string;
-  apiVersion: string;   // e.g. 2.0
-}
+// ─── Date range ───────────────────────────────────────────────────────────────
 
-const CONFIG_KEY = "tfs_config_v1";
-const TFS_FIELDS = [
-  "System.Id",
-  "System.Title",
-  "System.State",
-  "System.WorkItemType",
-  "System.AssignedTo",
-  "System.CreatedDate",
-  "System.ChangedDate",
-  "System.AreaPath",
-  "System.IterationPath",
-  "System.Tags",
-  "Microsoft.VSTS.Build.FoundIn",
-  "Microsoft.VSTS.Build.IntegrationBuild",
-].join(",");
+const DATE_RANGE_OPTIONS = [
+  { label: "1 month",   months: 1  },
+  { label: "3 months",  months: 3  },
+  { label: "6 months",  months: 6  },
+  { label: "12 months", months: 12 },
+  { label: "24 months", months: 24 },
+  { label: "All time",  months: 0  },
+] as const;
+
+type DateRangeMonths = typeof DATE_RANGE_OPTIONS[number]["months"];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -81,28 +70,6 @@ function shortenArea(area: string) {
   return p.length > 2 ? `…\\${p.slice(-2).join("\\")}` : area;
 }
 
-// ─── Date range options ───────────────────────────────────────────────────────
-
-const DATE_RANGE_OPTIONS = [
-  { label: "Last 1 month",   months: 1  },
-  { label: "Last 3 months",  months: 3  },
-  { label: "Last 6 months",  months: 6  },
-  { label: "Last 12 months", months: 12 },
-  { label: "Last 24 months", months: 24 },
-  { label: "All time",       months: 0  },
-] as const;
-
-type DateRangeMonths = typeof DATE_RANGE_OPTIONS[number]["months"];
-
-function buildSinceDate(months: DateRangeMonths): string | null {
-  if (months === 0) return null;
-  const d = new Date();
-  d.setMonth(d.getMonth() - months);
-  return d.toISOString().slice(0, 10); // YYYY-MM-DD
-}
-
-// ─── CIP cross-ref helper (still used for linking, not for fetching) ──────────
-
 function buildCipMap(cips: CIPRecord[]): Record<number, CIPRecord[]> {
   const map: Record<number, CIPRecord[]> = {};
   for (const cip of cips) {
@@ -115,111 +82,6 @@ function buildCipMap(cips: CIPRecord[]): Record<number, CIPRecord[]> {
     }
   }
   return map;
-}
-
-function extractAssignedTo(raw: unknown): string {
-  if (!raw) return "Unassigned";
-  if (typeof raw === "string") {
-    const m = raw.match(/^([^<]+)/);
-    return m ? m[1].trim() : raw;
-  }
-  if (typeof raw === "object" && raw !== null) {
-    const obj = raw as Record<string, unknown>;
-    return String(obj.displayName ?? obj.uniqueName ?? "Unassigned");
-  }
-  return "Unassigned";
-}
-
-// ─── Client-side TFS fetch (WIQL date-range → batch detail) ──────────────────
-
-async function tfsRequest(url: string, pat: string, options?: RequestInit): Promise<Response> {
-  const basicAuth = btoa(`:${pat}`);
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      Authorization: `Basic ${basicAuth}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      ...(options?.headers ?? {}),
-    },
-  });
-  if (res.status === 401 || res.status === 403) {
-    throw Object.assign(new Error("Authentication failed — check your PAT."), { code: "auth" });
-  }
-  const ct = res.headers.get("content-type") ?? "";
-  if (!res.ok) {
-    const body = ct.includes("application/json") ? JSON.stringify(await res.json()) : await res.text();
-    throw new Error(`TFS responded ${res.status}: ${body.slice(0, 300)}`);
-  }
-  if (!ct.includes("application/json")) {
-    const text = await res.text();
-    throw new Error(`Unexpected non-JSON response: ${text.slice(0, 200)}`);
-  }
-  return res;
-}
-
-async function fetchTFSByDateRange(
-  config: TFSConfig,
-  months: DateRangeMonths,
-  onProgress?: (loaded: number, total: number) => void
-): Promise<TFSWorkItem[]> {
-  const { baseUrl, collection, project, pat, apiVersion } = config;
-  const base = baseUrl.replace(/\/$/, "");
-  const sinceDate = buildSinceDate(months);
-
-  // Step 1 — WIQL query to get all matching IDs
-  const dateClause = sinceDate
-    ? ` AND [System.ChangedDate] >= '${sinceDate}'`
-    : "";
-  const wiql = {
-    query: `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '${project}'${dateClause} ORDER BY [System.ChangedDate] DESC`,
-  };
-
-  const wiqlUrl = `${base}/${collection}/_apis/wit/wiql?api-version=${apiVersion}`;
-  const wiqlRes = await tfsRequest(wiqlUrl, pat, {
-    method: "POST",
-    body: JSON.stringify(wiql),
-  });
-  const wiqlData = await wiqlRes.json() as { workItems?: { id: number }[] };
-  const ids = (wiqlData.workItems ?? []).map((w) => w.id);
-
-  if (ids.length === 0) return [];
-
-  // Step 2 — Batch fetch details (200 per request)
-  const batchSize = 200;
-  const all: TFSWorkItem[] = [];
-
-  for (let i = 0; i < ids.length; i += batchSize) {
-    const batch = ids.slice(i, i + batchSize);
-    const url = `${base}/${collection}/_apis/wit/workitems?ids=${batch.join(",")}&fields=${TFS_FIELDS}&api-version=${apiVersion}`;
-    const res = await tfsRequest(url, pat);
-    const data = await res.json() as { value?: unknown[] };
-    const items = (data.value ?? []) as Record<string, unknown>[];
-
-    for (const item of items) {
-      const f = (item.fields ?? {}) as Record<string, unknown>;
-      const id = Number(item.id);
-      all.push({
-        id,
-        title:        String(f["System.Title"] ?? ""),
-        status:       String(f["System.State"] ?? ""),
-        type:         String(f["System.WorkItemType"] ?? ""),
-        assignedTo:   extractAssignedTo(f["System.AssignedTo"]),
-        foundInBuild: String(f["Microsoft.VSTS.Build.FoundIn"] ?? ""),
-        fixedInBuild: String(f["Microsoft.VSTS.Build.IntegrationBuild"] ?? ""),
-        createdDate:  f["System.CreatedDate"] ? String(f["System.CreatedDate"]) : null,
-        changedDate:  f["System.ChangedDate"] ? String(f["System.ChangedDate"]) : null,
-        areaPath:     String(f["System.AreaPath"] ?? ""),
-        iteration:    String(f["System.IterationPath"] ?? ""),
-        tags:         String(f["System.Tags"] ?? ""),
-        tfsUrl:       `${base}/${collection}/${project}/_workitems/edit/${id}`,
-      });
-    }
-
-    onProgress?.(Math.min(i + batchSize, ids.length), ids.length);
-  }
-
-  return all;
 }
 
 // ─── Skeleton ─────────────────────────────────────────────────────────────────
@@ -236,151 +98,6 @@ function SkeletonRow() {
   );
 }
 
-// ─── Config Panel ─────────────────────────────────────────────────────────────
-
-function ConfigPanel({
-  initial,
-  onSave,
-  onCancel,
-  showCancel,
-}: {
-  initial: Partial<TFSConfig>;
-  onSave: (c: TFSConfig) => void;
-  onCancel?: () => void;
-  showCancel: boolean;
-}) {
-  const [form, setForm] = useState<TFSConfig>({
-    baseUrl:    initial.baseUrl    ?? "https://ado.chrsolutions.com/tfs",
-    collection: initial.collection ?? "CHR",
-    project:    initial.project    ?? "Omnia360Suite",
-    pat:        initial.pat        ?? "",
-    apiVersion: initial.apiVersion ?? "2.0",
-  });
-  const [showPat, setShowPat] = useState(false);
-
-  const set = (k: keyof TFSConfig) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setForm((f) => ({ ...f, [k]: e.target.value }));
-
-  const valid = form.baseUrl.trim() && form.collection.trim() && form.pat.trim();
-
-  return (
-    <div className="bg-[#111827] border border-gray-700 rounded-2xl overflow-hidden mb-6">
-      <div className="px-6 py-4 border-b border-gray-800 flex items-center gap-3">
-        <div className="w-8 h-8 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center shrink-0">
-          <svg className="w-4 h-4 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 5.625c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" />
-          </svg>
-        </div>
-        <div>
-          <h3 className="text-sm font-bold text-white">Connect to TFS</h3>
-          <p className="text-xs text-gray-500 mt-0.5">
-            Your browser will fetch TFS data directly. Credentials are stored locally in this browser only.
-          </p>
-        </div>
-      </div>
-
-      <div className="px-6 py-5 space-y-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="sm:col-span-2">
-            <label className="block text-xs font-medium text-gray-400 mb-1.5">TFS Base URL</label>
-            <input
-              type="text"
-              value={form.baseUrl}
-              onChange={set("baseUrl")}
-              placeholder="https://ado.chrsolutions.com/tfs"
-              className="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2.5 focus:outline-none focus:border-indigo-500 placeholder:text-gray-600 font-mono"
-            />
-            <p className="text-xs text-gray-600 mt-1">Include /tfs at the end if your TFS uses that path.</p>
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1.5">Collection</label>
-            <input
-              type="text"
-              value={form.collection}
-              onChange={set("collection")}
-              placeholder="DefaultCollection"
-              className="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2.5 focus:outline-none focus:border-indigo-500 placeholder:text-gray-600"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1.5">Project</label>
-            <input
-              type="text"
-              value={form.project}
-              onChange={set("project")}
-              placeholder="Omnia360Suite"
-              className="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2.5 focus:outline-none focus:border-indigo-500 placeholder:text-gray-600"
-            />
-          </div>
-
-          <div className="sm:col-span-2">
-            <label className="block text-xs font-medium text-gray-400 mb-1.5">Personal Access Token (PAT)</label>
-            <div className="relative">
-              <input
-                type={showPat ? "text" : "password"}
-                value={form.pat}
-                onChange={set("pat")}
-                placeholder="Paste your PAT here"
-                className="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2.5 pr-10 focus:outline-none focus:border-indigo-500 placeholder:text-gray-600 font-mono"
-              />
-              <button
-                type="button"
-                onClick={() => setShowPat((v) => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
-              >
-                {showPat ? (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88" />
-                  </svg>
-                ) : (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                  </svg>
-                )}
-              </button>
-            </div>
-            <p className="text-xs text-gray-600 mt-1">
-              TFS → User Settings → Security → Personal Access Tokens. Requires "Work Items (Read)" scope.
-            </p>
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1.5">API Version</label>
-            <input
-              type="text"
-              value={form.apiVersion}
-              onChange={set("apiVersion")}
-              placeholder="2.0"
-              className="w-full bg-gray-900 border border-gray-700 text-white text-sm rounded-lg px-3 py-2.5 focus:outline-none focus:border-indigo-500 placeholder:text-gray-600"
-            />
-          </div>
-        </div>
-
-        <div className="pt-2 flex items-center gap-3">
-          <button
-            onClick={() => valid && onSave(form)}
-            disabled={!valid}
-            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
-            </svg>
-            Connect &amp; Load
-          </button>
-          {showCancel && onCancel && (
-            <button onClick={onCancel} className="text-sm text-gray-500 hover:text-gray-300 transition-colors">
-              Cancel
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function TFSRecordsPage() {
@@ -389,17 +106,12 @@ export default function TFSRecordsPage() {
   const [cipLoading, setCipLoading]       = useState(true);
   const [tfsLoading, setTfsLoading]       = useState(false);
   const [tfsError, setTfsError]           = useState<string | null>(null);
-  const [errorCode, setErrorCode]         = useState<"auth"|"network"|"other"|null>(null);
+  const [errorCode, setErrorCode]         = useState<"auth"|"config"|"network"|"other"|null>(null);
   const [lastUpdated, setLastUpdated]     = useState<Date | null>(null);
   const [justRefreshed, setJustRefreshed] = useState(false);
 
-  // Config
-  const [config, setConfig]           = useState<TFSConfig | null>(null);
-  const [showConfig, setShowConfig]   = useState(false);
-
   // Date range
   const [dateRange, setDateRange] = useState<DateRangeMonths>(3);
-  const [loadProgress, setLoadProgress] = useState<{ loaded: number; total: number } | null>(null);
 
   // Filters
   const [search, setSearch]                 = useState("");
@@ -411,90 +123,79 @@ export default function TFSRecordsPage() {
   // Detail panel
   const [panelItem, setPanelItem] = useState<TFSWorkItem | null>(null);
 
-  // ── Load saved config from localStorage ──────────────────────────────────
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(CONFIG_KEY);
-      if (saved) setConfig(JSON.parse(saved) as TFSConfig);
-    } catch { /* ignore */ }
-  }, []);
-
   // ── Load CIP records ──────────────────────────────────────────────────────
   useEffect(() => {
     fetchCIPRecordsOnce().then((r) => { setCipRecords(r); setCipLoading(false); });
   }, []);
 
-  // ── CIP → TFS cross-reference map (for linking, not for fetching) ───────────
+  // ── CIP cross-reference map ───────────────────────────────────────────────
   const cipMap = useMemo(() => buildCipMap(cipRecords), [cipRecords]);
 
-  // ── Client-side TFS fetch (WIQL date range) ───────────────────────────────
-  const fetchTFS = useCallback(async (cfg: TFSConfig, months: DateRangeMonths) => {
+  // ── Fetch TFS via server-side API route ───────────────────────────────────
+  const fetchTFS = useCallback(async (months: DateRangeMonths) => {
     setTfsLoading(true);
     setTfsError(null);
     setErrorCode(null);
-    setLoadProgress(null);
 
     try {
-      const items = await fetchTFSByDateRange(cfg, months, (loaded, total) => {
-        setLoadProgress({ loaded, total });
+      const res = await fetch("/api/tfs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ months }),
       });
-      setTfsItems(items);
+
+      const ct = res.headers.get("content-type") ?? "";
+      if (!ct.includes("application/json")) {
+        const text = await res.text();
+        if (res.status === 504 || res.status === 502) {
+          setTfsError("Gateway timeout — TFS did not respond in time. Try a shorter date range.");
+          setErrorCode("network");
+          return;
+        }
+        setTfsError(`Unexpected response (${res.status}): ${text.slice(0, 200)}`);
+        setErrorCode("other");
+        return;
+      }
+
+      const data = await res.json() as Record<string, unknown>;
+
+      if (!res.ok) {
+        const msg = String(data.error ?? "Unknown error");
+        if (res.status === 401 || res.status === 403) {
+          setTfsError(msg); setErrorCode("auth");
+        } else if (res.status === 500 && msg.includes("not configured")) {
+          setTfsError(msg); setErrorCode("config");
+        } else if (res.status === 503 || Boolean(data.isNetwork)) {
+          setTfsError(msg); setErrorCode("network");
+        } else {
+          setTfsError(msg); setErrorCode("other");
+        }
+        return;
+      }
+
+      setTfsItems((data.items as TFSWorkItem[]) ?? []);
       setLastUpdated(new Date());
     } catch (e) {
-      const err = e as Error & { code?: string };
-      const msg = err.message ?? "Unknown error";
-
-      if (err.code === "auth") {
-        setErrorCode("auth");
-        setTfsError("Authentication failed — your PAT may be expired or invalid.");
-      } else if (
-        msg.includes("Failed to fetch") ||
-        msg.includes("NetworkError") ||
-        msg.includes("CORS") ||
-        msg.includes("Load failed")
-      ) {
-        setErrorCode("network");
-        setTfsError(
-          "Cannot reach the TFS server from your browser. " +
-          "This usually means you are not on the internal network/VPN, " +
-          "or the TFS server is blocking cross-origin requests (CORS)."
-        );
-      } else {
-        setErrorCode("other");
-        setTfsError(msg);
-      }
+      setTfsError(e instanceof Error ? e.message : "Failed to call /api/tfs");
+      setErrorCode("other");
     } finally {
       setTfsLoading(false);
-      setLoadProgress(null);
     }
   }, []);
 
-  // Auto-fetch when config is ready (CIP records only used for cross-ref, not gating)
+  // Auto-fetch on mount
   useEffect(() => {
-    if (config) fetchTFS(config, dateRange);
+    fetchTFS(dateRange);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config]); // intentionally only on config change; dateRange change handled by handleDateRangeChange
+  }, []);
 
-  // ── Save config ───────────────────────────────────────────────────────────
-  const handleSaveConfig = (cfg: TFSConfig) => {
-    localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
-    setConfig(cfg);
-    setShowConfig(false);
-    setTfsItems([]);
-    setTfsError(null);
-    setErrorCode(null);
-  };
-
-  // ── Date range change ─────────────────────────────────────────────────────
   const handleDateRangeChange = (months: DateRangeMonths) => {
     setDateRange(months);
-    if (config) fetchTFS(config, months);
+    fetchTFS(months);
   };
 
-  // ── Refresh ───────────────────────────────────────────────────────────────
   const handleRefresh = async () => {
-    if (!config) return;
-    await fetchTFS(config, dateRange);
+    await fetchTFS(dateRange);
     if (!tfsError) {
       setJustRefreshed(true);
       setTimeout(() => setJustRefreshed(false), 2000);
@@ -532,6 +233,7 @@ export default function TFSRecordsPage() {
   }), [tfsItems]);
 
   const hasFilters = search || selectedType !== "All" || selectedStatus !== "All" || selectedBuild !== "All" || cipLinkedOnly;
+  const loading = cipLoading || tfsLoading;
 
   // ── Export CSV ────────────────────────────────────────────────────────────
   const handleExportCSV = () => {
@@ -551,142 +253,94 @@ export default function TFSRecordsPage() {
     URL.revokeObjectURL(url);
   };
 
-  const loading = cipLoading || tfsLoading;
-
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
           <h2 className="text-xl font-bold text-white">TFS Records</h2>
           <p className="text-sm text-gray-500 mt-0.5">Azure DevOps — Omnia360Suite Project</p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           {/* Date range selector */}
-          {config && !showConfig && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500 shrink-0">Show:</span>
-              <div className="flex rounded-lg border border-gray-700 overflow-hidden">
-                {DATE_RANGE_OPTIONS.map((opt) => (
-                  <button
-                    key={opt.months}
-                    onClick={() => !loading && handleDateRangeChange(opt.months)}
-                    disabled={loading}
-                    className={`px-3 py-1.5 text-xs font-medium transition-colors border-r border-gray-700 last:border-r-0 disabled:cursor-not-allowed ${
-                      dateRange === opt.months
-                        ? "bg-indigo-600 text-white"
-                        : "bg-gray-900 text-gray-400 hover:bg-gray-800 hover:text-white"
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-500 shrink-0">Show:</span>
+            <div className="flex rounded-lg border border-gray-700 overflow-hidden">
+              {DATE_RANGE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.months}
+                  onClick={() => !loading && handleDateRangeChange(opt.months)}
+                  disabled={loading}
+                  className={`px-3 py-1.5 text-xs font-medium transition-colors border-r border-gray-700 last:border-r-0 disabled:cursor-not-allowed ${
+                    dateRange === opt.months
+                      ? "bg-indigo-600 text-white"
+                      : "bg-gray-900 text-gray-400 hover:bg-gray-800 hover:text-white"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
             </div>
-          )}
+          </div>
 
           {lastUpdated && (
             <span className={`text-xs transition-colors ${justRefreshed ? "text-green-400 font-medium" : "text-gray-500"}`}>
               {justRefreshed ? "Updated!" : `Synced at ${formatTime(lastUpdated)}`}
             </span>
           )}
-          <button
-            onClick={() => setShowConfig((v) => !v)}
-            className="flex items-center gap-2 text-sm bg-gray-800 hover:bg-gray-700 border border-gray-700 px-3 py-2 rounded-lg transition-colors"
-          >
-            <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+          <button onClick={handleRefresh} disabled={loading}
+            className="flex items-center gap-2 text-sm bg-gray-800 hover:bg-gray-700 border border-gray-700 disabled:opacity-50 px-3 py-2 rounded-lg transition-colors">
+            <svg className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
-            {config ? "Settings" : "Connect"}
+            Refresh
           </button>
-          {config && (
-            <>
-              <button onClick={handleRefresh} disabled={loading}
-                className="flex items-center gap-2 text-sm bg-gray-800 hover:bg-gray-700 border border-gray-700 disabled:opacity-50 px-3 py-2 rounded-lg transition-colors">
-                <svg className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-                Refresh
-              </button>
-              <button onClick={handleExportCSV} disabled={loading || filtered.length === 0}
-                className="text-sm bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded-lg transition-colors">
-                Export CSV
-              </button>
-            </>
-          )}
+          <button onClick={handleExportCSV} disabled={loading || filtered.length === 0}
+            className="text-sm bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded-lg transition-colors">
+            Export CSV
+          </button>
         </div>
       </div>
 
-      {/* Loading progress bar */}
-      {loadProgress && (
-        <div className="mb-4">
-          <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
-            <span>Loading work items…</span>
-            <span>{loadProgress.loaded} / {loadProgress.total}</span>
-          </div>
-          <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-indigo-500 rounded-full transition-all duration-300"
-              style={{ width: `${Math.round((loadProgress.loaded / loadProgress.total) * 100)}%` }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Config Panel */}
-      {(!config || showConfig) && (
-        <ConfigPanel
-          initial={config ?? {}}
-          onSave={handleSaveConfig}
-          onCancel={config ? () => setShowConfig(false) : undefined}
-          showCancel={!!config}
-        />
-      )}
-
       {/* KPI Cards */}
-      {config && !showConfig && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-          {loading ? (
-            Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="bg-gray-800/40 border border-gray-700 rounded-xl p-4 animate-pulse">
-                <div className="h-3 w-24 bg-gray-700 rounded mb-3" /><div className="h-8 w-16 bg-gray-700 rounded" />
-              </div>
-            ))
-          ) : (
-            <>
-              <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl p-4">
-                <p className="text-xs text-gray-500 mb-1">Total Items</p>
-                <p className="text-2xl font-bold text-indigo-400 tabular-nums">{kpi.total}</p>
-              </div>
-              <div className="bg-green-500/10 border border-green-500/20 rounded-xl p-4">
-                <p className="text-xs text-gray-500 mb-1">Closed / Resolved</p>
-                <p className="text-2xl font-bold text-green-400 tabular-nums">{kpi.closed}</p>
-              </div>
-              <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-4">
-                <p className="text-xs text-gray-500 mb-1">Active</p>
-                <p className="text-2xl font-bold text-yellow-400 tabular-nums">{kpi.active}</p>
-              </div>
-              <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
-                <p className="text-xs text-gray-500 mb-1">Bugs / User Stories</p>
-                <p className="text-2xl font-bold tabular-nums">
-                  <span className="text-red-400">{kpi.bugs}</span>
-                  <span className="text-base text-gray-500 font-normal mx-1">/</span>
-                  <span className="text-blue-400">{kpi.stories}</span>
-                </p>
-              </div>
-            </>
-          )}
-        </div>
-      )}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+        {loading ? (
+          Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="bg-gray-800/40 border border-gray-700 rounded-xl p-4 animate-pulse">
+              <div className="h-3 w-24 bg-gray-700 rounded mb-3" /><div className="h-8 w-16 bg-gray-700 rounded" />
+            </div>
+          ))
+        ) : (
+          <>
+            <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl p-4">
+              <p className="text-xs text-gray-500 mb-1">Total Items</p>
+              <p className="text-2xl font-bold text-indigo-400 tabular-nums">{kpi.total}</p>
+            </div>
+            <div className="bg-green-500/10 border border-green-500/20 rounded-xl p-4">
+              <p className="text-xs text-gray-500 mb-1">Closed / Resolved</p>
+              <p className="text-2xl font-bold text-green-400 tabular-nums">{kpi.closed}</p>
+            </div>
+            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-4">
+              <p className="text-xs text-gray-500 mb-1">Active</p>
+              <p className="text-2xl font-bold text-yellow-400 tabular-nums">{kpi.active}</p>
+            </div>
+            <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4">
+              <p className="text-xs text-gray-500 mb-1">Bugs / User Stories</p>
+              <p className="text-2xl font-bold tabular-nums">
+                <span className="text-red-400">{kpi.bugs}</span>
+                <span className="text-base text-gray-500 font-normal mx-1">/</span>
+                <span className="text-blue-400">{kpi.stories}</span>
+              </p>
+            </div>
+          </>
+        )}
+      </div>
 
       {/* Error banner */}
-      {tfsError && config && !showConfig && (
+      {tfsError && (
         <div className={`mb-5 px-4 py-4 rounded-xl border ${
-          errorCode === "network"
-            ? "bg-amber-900/15 border-amber-700/40"
-            : "bg-red-900/20 border-red-700/40"
+          errorCode === "network" ? "bg-amber-900/15 border-amber-700/40" : "bg-red-900/20 border-red-700/40"
         }`}>
           <div className="flex items-start gap-3">
             <svg className={`w-5 h-5 shrink-0 mt-0.5 ${errorCode === "network" ? "text-amber-400" : "text-red-400"}`}
@@ -697,15 +351,25 @@ export default function TFSRecordsPage() {
               {errorCode === "auth" ? (
                 <>
                   <p className="text-sm font-semibold text-red-300">Authentication failed</p>
-                  <p className="text-xs text-red-400 mt-1">Your PAT is expired or invalid. Generate a new one in TFS → User Settings → Security → Personal Access Tokens.</p>
+                  <p className="text-xs text-red-400 mt-1">
+                    The <code className="bg-red-900/30 px-1 rounded">AZURE_DEVOPS_PAT</code> in Vercel environment variables is expired or invalid.
+                    Generate a new PAT in Azure DevOps → User Settings → Security → Personal Access Tokens, then update it in Vercel.
+                  </p>
+                </>
+              ) : errorCode === "config" ? (
+                <>
+                  <p className="text-sm font-semibold text-red-300">TFS environment variables missing</p>
+                  <p className="text-xs text-red-400 mt-1">
+                    Add <code className="bg-red-900/30 px-1 rounded font-mono">AZURE_DEVOPS_PAT</code>,{" "}
+                    <code className="bg-red-900/30 px-1 rounded font-mono">AZURE_DEVOPS_URL</code>,{" "}
+                    <code className="bg-red-900/30 px-1 rounded font-mono">AZURE_DEVOPS_COLLECTION</code>,{" "}
+                    <code className="bg-red-900/30 px-1 rounded font-mono">AZURE_DEVOPS_PROJECT</code> to Vercel environment variables and redeploy.
+                  </p>
                 </>
               ) : errorCode === "network" ? (
                 <>
-                  <p className="text-sm font-semibold text-amber-300">Cannot reach TFS from your browser</p>
-                  <p className="text-xs text-amber-500/90 mt-1">
-                    Make sure you are on the internal network or VPN, and that TFS allows cross-origin requests (CORS).<br />
-                    If TFS is HTTP and this app is HTTPS, browsers will block the request — open the app over HTTP locally or configure TFS with HTTPS.
-                  </p>
+                  <p className="text-sm font-semibold text-amber-300">Cannot reach TFS server</p>
+                  <p className="text-xs text-amber-500/90 mt-1 font-mono break-all">{tfsError}</p>
                 </>
               ) : (
                 <>
@@ -713,23 +377,17 @@ export default function TFSRecordsPage() {
                   <p className="text-xs text-red-400 mt-1 font-mono break-all">{tfsError}</p>
                 </>
               )}
-              <div className="flex items-center gap-3 mt-2">
-                <button onClick={handleRefresh} disabled={loading}
-                  className="text-xs text-gray-300 hover:text-white underline underline-offset-2 disabled:opacity-50">
-                  Retry
-                </button>
-                <button onClick={() => setShowConfig(true)}
-                  className="text-xs text-indigo-400 hover:text-indigo-300 underline underline-offset-2">
-                  Edit connection settings
-                </button>
-              </div>
+              <button onClick={handleRefresh} disabled={loading}
+                className="mt-2 text-xs text-gray-300 hover:text-white underline underline-offset-2 disabled:opacity-50">
+                Retry
+              </button>
             </div>
           </div>
         </div>
       )}
 
       {/* Filters */}
-      {config && !showConfig && !tfsError && (
+      {!tfsError && (
         <div className="flex flex-wrap gap-3 mb-4 items-center">
           <div className="relative flex-1 min-w-[200px] max-w-xs">
             <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -744,6 +402,8 @@ export default function TFSRecordsPage() {
             <option value="All">All Types</option>
             <option value="Bug">Bug</option>
             <option value="User Story">User Story</option>
+            <option value="Task">Task</option>
+            <option value="Test Case">Test Case</option>
           </select>
           <select value={selectedStatus} onChange={(e) => setSelectedStatus(e.target.value)}
             className="bg-[#1a1f2e] border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500 cursor-pointer">
@@ -754,6 +414,7 @@ export default function TFSRecordsPage() {
             <option value="New">New</option>
             <option value="In Progress">In Progress</option>
             <option value="Code Complete">Code Complete</option>
+            <option value="Design">Design</option>
           </select>
           <select value={selectedBuild} onChange={(e) => setSelectedBuild(e.target.value)}
             className="bg-[#1a1f2e] border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500 cursor-pointer">
@@ -775,91 +436,95 @@ export default function TFSRecordsPage() {
       )}
 
       {/* Table */}
-      {config && !showConfig && (
-        <div className="bg-[#111827] border border-gray-800 rounded-2xl overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-800">
-            <p className="text-sm font-medium text-white">
-              {loading ? "Loading…" : `${filtered.length} work item${filtered.length !== 1 ? "s" : ""}${hasFilters ? " (filtered)" : ""}`}
-            </p>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-800 text-xs uppercase tracking-wider text-gray-500">
-                  <th className="px-4 py-3 text-left font-semibold">TFS ID</th>
-                  <th className="px-4 py-3 text-left font-semibold">Type</th>
-                  <th className="px-4 py-3 text-left font-semibold">Title</th>
-                  <th className="px-4 py-3 text-left font-semibold">Status</th>
-                  <th className="px-4 py-3 text-left font-semibold">Assigned To</th>
-                  <th className="px-4 py-3 text-left font-semibold">Fixed In</th>
-                  <th className="px-4 py-3 text-left font-semibold">Area</th>
-                  <th className="px-4 py-3 text-left font-semibold">CIPs</th>
-                  <th className="px-4 py-3 text-left font-semibold">Updated</th>
-                </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)
-                ) : filtered.length === 0 ? (
-                  <tr>
-                    <td colSpan={9} className="px-4 py-16 text-center text-gray-500 text-sm">
-                      {tfsItems.length === 0 ? "No TFS records loaded." : "No items match your filters."}
-                    </td>
-                  </tr>
-                ) : (
-                  filtered.map((item) => {
-                    const linkedCips = cipMap[item.id] ?? [];
-                    return (
-                      <tr key={item.id}
-                        onClick={() => setPanelItem(item)}
-                        className="border-b border-gray-800/60 hover:bg-gray-800/30 cursor-pointer transition-colors">
-                        <td className="px-4 py-3.5">
-                          <a href={item.tfsUrl} target="_blank" rel="noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="text-indigo-400 hover:text-indigo-300 font-mono font-medium hover:underline">
-                            #{item.id}
-                          </a>
-                        </td>
-                        <td className="px-4 py-3.5">
-                          <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${
-                            item.type.toLowerCase() === "bug"
-                              ? "bg-red-900/30 text-red-300 border-red-700/50"
-                              : "bg-blue-900/30 text-blue-300 border-blue-700/50"
-                          }`}>{item.type}</span>
-                        </td>
-                        <td className="px-4 py-3.5 max-w-xs">
-                          <span className="block truncate text-gray-200" title={item.title}>{item.title}</span>
-                        </td>
-                        <td className="px-4 py-3.5">
-                          <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${statusBadgeClass(item.status)}`}>
-                            {item.status}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3.5 text-gray-400 whitespace-nowrap">{item.assignedTo}</td>
-                        <td className="px-4 py-3.5 text-gray-400 font-mono text-xs">{item.fixedInBuild || "—"}</td>
-                        <td className="px-4 py-3.5 text-gray-500 text-xs max-w-[160px]">
-                          <span className="block truncate" title={item.areaPath}>{shortenArea(item.areaPath)}</span>
-                        </td>
-                        <td className="px-4 py-3.5">
-                          {linkedCips.length > 0 ? (
-                            <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-indigo-600/20 border border-indigo-500/30 text-xs font-bold text-indigo-300">
-                              {linkedCips.length}
-                            </span>
-                          ) : (
-                            <span className="text-gray-700">—</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3.5 text-gray-500 text-xs whitespace-nowrap">{timeAgo(item.changedDate)}</td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
+      <div className="bg-[#111827] border border-gray-800 rounded-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-800">
+          <p className="text-sm font-medium text-white">
+            {loading
+              ? "Loading…"
+              : `${filtered.length} work item${filtered.length !== 1 ? "s" : ""}${hasFilters ? " (filtered)" : ""}`}
+          </p>
         </div>
-      )}
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-800 text-xs uppercase tracking-wider text-gray-500">
+                <th className="px-4 py-3 text-left font-semibold">TFS ID</th>
+                <th className="px-4 py-3 text-left font-semibold">Type</th>
+                <th className="px-4 py-3 text-left font-semibold">Title</th>
+                <th className="px-4 py-3 text-left font-semibold">Status</th>
+                <th className="px-4 py-3 text-left font-semibold">Assigned To</th>
+                <th className="px-4 py-3 text-left font-semibold">Fixed In</th>
+                <th className="px-4 py-3 text-left font-semibold">Area</th>
+                <th className="px-4 py-3 text-left font-semibold">CIPs</th>
+                <th className="px-4 py-3 text-left font-semibold">Updated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)
+              ) : filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="px-4 py-16 text-center text-gray-500 text-sm">
+                    {tfsItems.length === 0 ? "No TFS records found for this date range." : "No items match your filters."}
+                  </td>
+                </tr>
+              ) : (
+                filtered.map((item) => {
+                  const linkedCips = cipMap[item.id] ?? [];
+                  return (
+                    <tr key={item.id}
+                      onClick={() => setPanelItem(item)}
+                      className="border-b border-gray-800/60 hover:bg-gray-800/30 cursor-pointer transition-colors">
+                      <td className="px-4 py-3.5">
+                        <a href={item.tfsUrl} target="_blank" rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-indigo-400 hover:text-indigo-300 font-mono font-medium hover:underline">
+                          #{item.id}
+                        </a>
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${
+                          item.type.toLowerCase() === "bug"
+                            ? "bg-red-900/30 text-red-300 border-red-700/50"
+                            : item.type.toLowerCase() === "user story"
+                            ? "bg-blue-900/30 text-blue-300 border-blue-700/50"
+                            : item.type.toLowerCase() === "task"
+                            ? "bg-purple-900/30 text-purple-300 border-purple-700/50"
+                            : "bg-gray-800/60 text-gray-400 border-gray-600/50"
+                        }`}>{item.type}</span>
+                      </td>
+                      <td className="px-4 py-3.5 max-w-xs">
+                        <span className="block truncate text-gray-200" title={item.title}>{item.title}</span>
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${statusBadgeClass(item.status)}`}>
+                          {item.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5 text-gray-400 whitespace-nowrap">{item.assignedTo}</td>
+                      <td className="px-4 py-3.5 text-gray-400 font-mono text-xs">{item.fixedInBuild || "—"}</td>
+                      <td className="px-4 py-3.5 text-gray-500 text-xs max-w-[160px]">
+                        <span className="block truncate" title={item.areaPath}>{shortenArea(item.areaPath)}</span>
+                      </td>
+                      <td className="px-4 py-3.5">
+                        {linkedCips.length > 0 ? (
+                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-indigo-600/20 border border-indigo-500/30 text-xs font-bold text-indigo-300">
+                            {linkedCips.length}
+                          </span>
+                        ) : (
+                          <span className="text-gray-700">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3.5 text-gray-500 text-xs whitespace-nowrap">{timeAgo(item.changedDate)}</td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
       {/* Detail slide-out panel */}
       {panelItem && (
@@ -871,7 +536,11 @@ export default function TFSRecordsPage() {
                 <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${
                   panelItem.type.toLowerCase() === "bug"
                     ? "bg-red-900/30 text-red-300 border-red-700/50"
-                    : "bg-blue-900/30 text-blue-300 border-blue-700/50"
+                    : panelItem.type.toLowerCase() === "user story"
+                    ? "bg-blue-900/30 text-blue-300 border-blue-700/50"
+                    : panelItem.type.toLowerCase() === "task"
+                    ? "bg-purple-900/30 text-purple-300 border-purple-700/50"
+                    : "bg-gray-800/60 text-gray-400 border-gray-600/50"
                 }`}>{panelItem.type}</span>
                 <span className="font-mono text-indigo-400 font-medium">#{panelItem.id}</span>
               </div>
@@ -893,7 +562,7 @@ export default function TFSRecordsPage() {
 
               <div className="grid grid-cols-2 gap-4">
                 {([
-                  ["Status",     <span key="s" className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${statusBadgeClass(panelItem.status)}`}>{panelItem.status}</span>],
+                  ["Status", <span key="s" className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${statusBadgeClass(panelItem.status)}`}>{panelItem.status}</span>],
                   ["Assigned To", panelItem.assignedTo],
                   ["Found In",   panelItem.foundInBuild || "—"],
                   ["Fixed In",   panelItem.fixedInBuild || "—"],
