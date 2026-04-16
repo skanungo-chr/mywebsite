@@ -293,7 +293,7 @@ export default function TFSRecordsPage() {
   const [cipLoading, setCipLoading]       = useState(true);
   const [tfsLoading, setTfsLoading]       = useState(false);
   const [tfsError, setTfsError]           = useState<string | null>(null);
-  const [errorCode, setErrorCode]         = useState<"NO_PAT"|"INVALID_PAT"|"NETWORK"|"OTHER"|null>(null);
+  const [errorCode, setErrorCode]         = useState<"NO_PAT"|"INVALID_PAT"|"NETWORK"|"CORS"|"OTHER"|null>(null);
   const [lastUpdated, setLastUpdated]     = useState<Date | null>(null);
   const [justRefreshed, setJustRefreshed] = useState(false);
 
@@ -346,8 +346,17 @@ export default function TFSRecordsPage() {
         msg.includes("fetch failed")    ||
         msg.includes("CORS")
       ) {
-        setErrorCode("NETWORK");
-        setTfsError("NETWORK");
+        // Probe with no-cors to distinguish "server reachable but CORS blocked" vs "server unreachable"
+        const probeUrl = `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/`;
+        let isCors = false;
+        try {
+          await fetch(probeUrl, { mode: "no-cors" });
+          isCors = true; // probe succeeded → server IS reachable → CORS is the issue
+        } catch {
+          isCors = false; // probe failed → truly unreachable
+        }
+        setErrorCode(isCors ? "CORS" : "NETWORK");
+        setTfsError(isCors ? "CORS" : "NETWORK");
       } else {
         setErrorCode("OTHER");
         setTfsError(msg);
@@ -507,6 +516,34 @@ export default function TFSRecordsPage() {
       </div>
 
       {/* Error banners */}
+      {errorCode === "CORS" && (
+        <div className="mb-5 px-4 py-4 rounded-xl bg-orange-900/20 border border-orange-700/40">
+          <div className="flex items-start gap-3">
+            <span className="text-xl shrink-0">🚫</span>
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-orange-300">CORS Blocked — TFS Server Reached but Request Denied</p>
+              <p className="text-xs text-orange-400/90 mt-1">
+                Your browser can reach the TFS server (VPN is working), but the server is not sending
+                CORS headers that allow requests from this web app&apos;s origin.
+              </p>
+              <p className="text-xs text-gray-500 mt-2 font-medium">To fix this, a TFS/IIS admin must add this response header to the TFS site:</p>
+              <pre className="text-xs bg-gray-900 text-green-400 rounded px-3 py-2 mt-1 overflow-x-auto">
+{`Access-Control-Allow-Origin: https://my-next-app-seven-neon.vercel.app
+Access-Control-Allow-Methods: GET, POST, OPTIONS
+Access-Control-Allow-Headers: Authorization, Content-Type, Accept`}
+              </pre>
+              <p className="text-xs text-gray-500 mt-2">
+                In IIS Manager → TFS site → HTTP Response Headers, add the above. Or ask your Azure DevOps Server admin.
+              </p>
+              <button onClick={handleRefresh} disabled={loading}
+                className="mt-2 text-xs text-orange-300 hover:text-orange-200 underline underline-offset-2 disabled:opacity-50">
+                Retry
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {errorCode === "NETWORK" && (
         <div className="mb-5 px-4 py-4 rounded-xl bg-yellow-900/20 border border-yellow-700/40">
           <div className="flex items-start gap-3">
