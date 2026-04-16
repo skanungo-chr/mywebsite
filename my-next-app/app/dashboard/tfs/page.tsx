@@ -1203,8 +1203,6 @@ export default function TFSRecordsPage() {
                   <option value="All">All Types</option>
                   <option value="Bug">Bug</option>
                   <option value="User Story">User Story</option>
-                  <option value="Task">Task</option>
-                  <option value="Test Case">Test Case</option>
                 </select>
                 <select value={selectedStatus} onChange={e => setSelectedStatus(e.target.value)}
                   className="bg-[#1a1f2e] border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500 cursor-pointer">
