@@ -413,7 +413,8 @@ interface BuildGroup {
 function buildVersionGroups(tfsItems: TFSWorkItem[], cipMap: Record<number, CIPRecord[]>): BuildGroup[] {
   const byBuild: Record<string, BuildGroup> = {};
   for (const item of tfsItems) {
-    const build = item.fixedInBuild?.trim() || "Not Assigned";
+    const build = item.fixedInBuild?.trim();
+    if (!build) continue; // skip items with no Fixed In Build
     if (!byBuild[build]) byBuild[build] = { buildName: build, tfsItems: [], totalTFSItems: 0, totalIncidents: 0 };
     const linkedCips = cipMap[item.id] ?? [];
     byBuild[build].tfsItems.push({ ...item, linkedCips });
