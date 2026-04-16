@@ -635,7 +635,7 @@ function VersionSummary({ tfsItems, cipMap }: { tfsItems: TFSWorkItem[]; cipMap:
                                         <tbody>
                                           {tfs.linkedCips.map((cip, idx) => (
                                             <tr key={cip.id} className={idx % 2 === 0 ? "bg-[#0d1220]" : "bg-gray-900/20"}>
-                                              <td className="px-3 py-2 font-mono text-indigo-400 whitespace-nowrap">{cip.id}</td>
+                                              <td className="px-3 py-2 font-mono text-indigo-400 whitespace-nowrap max-w-[160px] truncate" title={cip.chrTicketNumbers}>{cip.chrTicketNumbers || "—"}</td>
                                               <td className="px-3 py-2 text-gray-200 max-w-[200px] truncate" title={cip.clientName}>{cip.clientName || "—"}</td>
                                               <td className="px-3 py-2">
                                                 <span className={`px-1.5 py-0.5 rounded border text-xs ${statusBadgeClass(cip.cipStatus ?? "")}`}>
