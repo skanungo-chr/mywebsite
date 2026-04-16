@@ -22,40 +22,25 @@ interface TFSWorkItem {
   tfsUrl:       string;
 }
 
-// ─── TFS Config (NEXT_PUBLIC_ vars — embedded in browser bundle at build time) ─
+type ErrorCode = "NO_PAT" | "INVALID_PAT" | "NETWORK" | "CORS" | "METHOD_NOT_ALLOWED" | "OTHER" | null;
+
+// ─── Config (NEXT_PUBLIC_ — embedded in browser bundle at build time) ─────────
 
 const TFS_URL        = (process.env.NEXT_PUBLIC_TFS_URL        ?? "https://ado.chrsolutions.com/tfs").replace(/\/+$/, "").trim();
 const TFS_COLLECTION = (process.env.NEXT_PUBLIC_TFS_COLLECTION ?? "CHR").trim();
 const TFS_PROJECT    = (process.env.NEXT_PUBLIC_TFS_PROJECT    ?? "Omnia360Suite").trim();
 const TFS_API_VER    = (process.env.NEXT_PUBLIC_TFS_API_VERSION ?? "6.0").trim();
 const TFS_ENV_PAT    =  process.env.NEXT_PUBLIC_TFS_PAT        ?? "";
-
 const PAT_OVERRIDE_KEY = "tfs_pat_override";
 
 const TFS_FIELDS = [
-  "System.Id",
-  "System.Title",
-  "System.State",
-  "System.WorkItemType",
-  "System.AssignedTo",
-  "System.CreatedDate",
-  "System.ChangedDate",
-  "Microsoft.VSTS.Build.FoundIn",
-  "Microsoft.VSTS.Build.IntegrationBuild",
-  "System.Tags",
-  "System.AreaPath",
-  "System.IterationPath",
+  "System.Id", "System.Title", "System.State", "System.WorkItemType",
+  "System.AssignedTo", "System.CreatedDate", "System.ChangedDate",
+  "Microsoft.VSTS.Build.FoundIn", "Microsoft.VSTS.Build.IntegrationBuild",
+  "System.Tags", "System.AreaPath", "System.IterationPath",
 ].join(",");
 
-function getActivePAT(): string {
-  if (typeof window === "undefined") return TFS_ENV_PAT;
-  const override = localStorage.getItem(PAT_OVERRIDE_KEY);
-  return (override ?? TFS_ENV_PAT).trim();
-}
-
-function buildAuthHeader(pat: string): string {
-  return `Basic ${btoa(`:${pat}`)}`;
-}
+const MAX_REPORTING_ITEMS = 2000;
 
 // ─── Date range ───────────────────────────────────────────────────────────────
 
@@ -70,138 +55,225 @@ const DATE_RANGE_OPTIONS = [
 
 type DateRangeMonths = typeof DATE_RANGE_OPTIONS[number]["months"];
 
-// ─── Extract TFS IDs from CIP records ────────────────────────────────────────
+// ─── PAT helpers ──────────────────────────────────────────────────────────────
 
-function extractCIPTFSIds(cips: CIPRecord[]): number[] {
-  const ids = new Set<number>();
-  for (const cip of cips) {
-    const raw = String(cip.chrTicketNumbers ?? "");
-    const matches = raw.match(/\d{4,6}/g);
-    if (matches) for (const m of matches) ids.add(parseInt(m, 10));
-  }
-  return [...ids];
+function getActivePAT(): string {
+  if (typeof window === "undefined") return TFS_ENV_PAT;
+  return (localStorage.getItem(PAT_OVERRIDE_KEY) ?? TFS_ENV_PAT).trim();
+}
+function buildAuthHeader(pat: string): string { return `Basic ${btoa(`:${pat}`)}`; }
+
+// ─── Map raw API item → TFSWorkItem ───────────────────────────────────────────
+
+function mapWorkItem(raw: Record<string, unknown>): TFSWorkItem | null {
+  // Support both nested { fields: {...} } and flat format from reporting API
+  const f = (typeof raw.fields === "object" && raw.fields !== null ? raw.fields : raw) as Record<string, unknown>;
+  const id = Number(raw.id ?? f["System.Id"]);
+  if (!id) return null;
+  const assigned = f["System.AssignedTo"];
+  const assignedTo = assigned
+    ? typeof assigned === "object"
+      ? String((assigned as Record<string, unknown>).displayName ?? "Unassigned")
+      : String(assigned).replace(/<[^>]+>/g, "").trim() || "Unassigned"
+    : "Unassigned";
+  return {
+    id,
+    title:        String(f["System.Title"]                          ?? ""),
+    status:       String(f["System.State"]                          ?? ""),
+    type:         String(f["System.WorkItemType"]                   ?? ""),
+    assignedTo,
+    foundInBuild: String(f["Microsoft.VSTS.Build.FoundIn"]          ?? ""),
+    fixedInBuild: String(f["Microsoft.VSTS.Build.IntegrationBuild"] ?? ""),
+    createdDate:  f["System.CreatedDate"] ? String(f["System.CreatedDate"]) : null,
+    changedDate:  f["System.ChangedDate"] ? String(f["System.ChangedDate"]) : null,
+    areaPath:     String(f["System.AreaPath"]      ?? ""),
+    iteration:    String(f["System.IterationPath"] ?? ""),
+    tags:         String(f["System.Tags"]          ?? ""),
+    tfsUrl:       `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_workitems/edit/${id}`,
+  };
 }
 
-// ─── Browser-side TFS fetch — GET only ───────────────────────────────────────
+// ─── GET batch fetch by IDs ───────────────────────────────────────────────────
 
-async function fetchTFSItemsByIds(ids: number[]): Promise<TFSWorkItem[]> {
+async function fetchTFSItemsByIds(ids: number[], auth: string): Promise<TFSWorkItem[]> {
   if (ids.length === 0) return [];
-
-  const pat = getActivePAT();
-  if (!pat) throw Object.assign(new Error("NO_PAT"), { code: "NO_PAT" });
-
-  const auth = buildAuthHeader(pat);
   const all: TFSWorkItem[] = [];
-
   for (let i = 0; i < ids.length; i += 200) {
     const batch = ids.slice(i, i + 200);
-    // GET — all params in query string, no body
     const url =
       `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/workitems` +
       `?ids=${batch.join(",")}` +
       `&fields=${TFS_FIELDS}` +
+      `&errorPolicy=omit` +
       `&api-version=${TFS_API_VER}`;
-
-    const res = await fetch(url, {
-      method: "GET",
-      headers: { Authorization: auth, Accept: "application/json" },
-    });
-
-    if (res.status === 401 || res.status === 403) {
-      throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
-    }
-    if (res.status === 405) {
-      throw Object.assign(new Error("TFS_METHOD_NOT_ALLOWED"), { code: "METHOD_NOT_ALLOWED" });
-    }
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      throw new Error(`TFS work items error ${res.status}: ${txt.slice(0, 200)}`);
-    }
-
+    const res = await fetch(url, { method: "GET", headers: { Authorization: auth, Accept: "application/json" } });
+    if (res.status === 401 || res.status === 403) throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
+    if (res.status === 405) throw Object.assign(new Error("TFS_METHOD_NOT_ALLOWED"), { code: "METHOD_NOT_ALLOWED" });
+    if (!res.ok) { const t = await res.text().catch(() => ""); throw new Error(`TFS ${res.status}: ${t.slice(0, 200)}`); }
     const data = await res.json() as { value?: unknown[] };
     for (const raw of (data.value ?? []) as Record<string, unknown>[]) {
-      const f = (raw.fields ?? {}) as Record<string, unknown>;
-      const id = Number(raw.id);
-      const assigned = f["System.AssignedTo"];
-      const assignedTo = assigned
-        ? typeof assigned === "object"
-          ? String((assigned as Record<string, unknown>).displayName ?? "Unassigned")
-          : String(assigned).replace(/<[^>]+>/, "").trim() || "Unassigned"
-        : "Unassigned";
-
-      all.push({
-        id,
-        title:        String(f["System.Title"]                          ?? ""),
-        status:       String(f["System.State"]                          ?? ""),
-        type:         String(f["System.WorkItemType"]                   ?? ""),
-        assignedTo,
-        foundInBuild: String(f["Microsoft.VSTS.Build.FoundIn"]          ?? ""),
-        fixedInBuild: String(f["Microsoft.VSTS.Build.IntegrationBuild"] ?? ""),
-        createdDate:  f["System.CreatedDate"] ? String(f["System.CreatedDate"]) : null,
-        changedDate:  f["System.ChangedDate"] ? String(f["System.ChangedDate"]) : null,
-        areaPath:     String(f["System.AreaPath"]      ?? ""),
-        iteration:    String(f["System.IterationPath"] ?? ""),
-        tags:         String(f["System.Tags"]          ?? ""),
-        tfsUrl:       `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_workitems/edit/${id}`,
-      });
+      const item = mapWorkItem(raw); if (item) all.push(item);
     }
-
-    // Small delay between batches to avoid flooding the server
-    if (i + 200 < ids.length) {
-      await new Promise((r) => setTimeout(r, 300));
-    }
+    if (i + 200 < ids.length) await new Promise(r => setTimeout(r, 250));
   }
-
   return all;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── GET date-range via Reporting API (collection-level endpoint) ─────────────
+// GET {collection}/_apis/wit/reporting/workitems?startDateTime=...&project=...
 
-function formatTime(d: Date) {
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+async function fetchIdsByDateRange(months: DateRangeMonths, auth: string): Promise<{ ids: number[], capped: boolean }> {
+  const fromDate = months > 0
+    ? (() => { const d = new Date(); d.setMonth(d.getMonth() - months); return d.toISOString(); })()
+    : "2020-01-01T00:00:00Z";
+
+  const ids: number[] = [];
+  let token: string | null = null;
+  let isLast = false;
+
+  do {
+    let url =
+      `${TFS_URL}/${TFS_COLLECTION}/_apis/wit/reporting/workitems` +
+      `?startDateTime=${encodeURIComponent(fromDate)}` +
+      `&project=${encodeURIComponent(TFS_PROJECT)}` +
+      `&fields=System.Id` +
+      `&api-version=${TFS_API_VER}`;
+    if (token) url += `&continuationToken=${encodeURIComponent(token)}`;
+
+    const res = await fetch(url, { method: "GET", headers: { Authorization: auth, Accept: "application/json" } });
+    if (res.status === 401 || res.status === 403) throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
+    if (res.status === 405) throw Object.assign(new Error("TFS_METHOD_NOT_ALLOWED"), { code: "METHOD_NOT_ALLOWED" });
+    if (!res.ok) throw new Error(`REPORTING_API_UNAVAILABLE:${res.status}`);
+
+    const data = await res.json() as {
+      values?: Record<string, unknown>[];
+      nextLink?: string;
+      isLastBatch?: boolean;
+      continuationToken?: string;
+    };
+
+    for (const v of data.values ?? []) {
+      const f = (typeof v.fields === "object" && v.fields !== null ? v.fields : v) as Record<string, unknown>;
+      const id = Number(v.id ?? f["System.Id"]);
+      if (id) ids.push(id);
+    }
+
+    isLast = data.isLastBatch ?? true;
+    token = data.continuationToken ?? null;
+    if (!token && data.nextLink) {
+      const m = data.nextLink.match(/continuationToken=([^&]+)/i);
+      token = m ? decodeURIComponent(m[1]) : null;
+    }
+
+    if (ids.length >= MAX_REPORTING_ITEMS) return { ids, capped: true };
+  } while (!isLast && token);
+
+  return { ids, capped: false };
 }
 
-function timeAgo(dateStr: string | null): string {
-  if (!dateStr) return "—";
-  const diff  = Date.now() - new Date(dateStr).getTime();
-  const mins  = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
-  const days  = Math.floor(diff / 86400000);
-  if (mins  < 1)  return "Just now";
-  if (mins  < 60) return `${mins}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  if (days  < 30) return `${days}d ago`;
-  const mo = Math.floor(days / 30);
-  return mo < 12 ? `${mo}mo ago` : `${Math.floor(mo / 12)}yr ago`;
+// ─── Combined fetch strategy ──────────────────────────────────────────────────
+// 1. Try Reporting API (GET, date-range, all items)
+// 2. If unavailable, fall back to CIP-extracted IDs only
+// 3. Always also include CIP-linked IDs (may be outside date range)
+
+async function fetchAllTFSData(months: DateRangeMonths, cipIds: number[]): Promise<{
+  items: TFSWorkItem[];
+  usedFallback: boolean;
+  capped: boolean;
+}> {
+  const pat = getActivePAT();
+  if (!pat) throw Object.assign(new Error("NO_PAT"), { code: "NO_PAT" });
+  const auth = buildAuthHeader(pat);
+
+  let rangeIds: number[] = [];
+  let usedFallback = false;
+  let capped = false;
+
+  try {
+    const r = await fetchIdsByDateRange(months, auth);
+    rangeIds = r.ids;
+    capped = r.capped;
+  } catch (err) {
+    const e = err as Error & { code?: string };
+    if (e.code === "INVALID_PAT" || e.code === "METHOD_NOT_ALLOWED") throw err;
+    usedFallback = true;
+  }
+
+  // Merge range IDs with CIP-linked IDs
+  const allIds = new Set(usedFallback ? cipIds : rangeIds);
+  for (const id of cipIds) allIds.add(id); // always include CIP-linked items
+
+  const items = await fetchTFSItemsByIds([...allIds], auth);
+  return { items, usedFallback, capped };
 }
 
-function statusBadgeClass(s: string) {
-  const l = s.toLowerCase();
-  if (l === "active")                     return "bg-yellow-900/40 text-yellow-300 border-yellow-700/50";
-  if (l === "closed" || l === "resolved") return "bg-green-900/40 text-green-300 border-green-700/50";
-  if (l === "new")                        return "bg-gray-700/60 text-gray-300 border-gray-600/50";
-  if (l === "in progress")                return "bg-cyan-900/40 text-cyan-300 border-cyan-700/50";
-  if (l === "code complete")              return "bg-blue-900/40 text-blue-300 border-blue-700/50";
-  return "bg-gray-800/60 text-gray-400 border-gray-600/50";
-}
+// ─── CIP helpers ──────────────────────────────────────────────────────────────
 
-function shortenArea(area: string) {
-  const p = area.split("\\");
-  return p.length > 2 ? `…\\${p.slice(-2).join("\\")}` : area;
+function extractCIPTFSIds(cips: CIPRecord[]): number[] {
+  const ids = new Set<number>();
+  for (const c of cips) {
+    const m = String(c.chrTicketNumbers ?? "").match(/\d{4,6}/g);
+    if (m) for (const x of m) ids.add(parseInt(x, 10));
+  }
+  return [...ids];
 }
 
 function buildCipMap(cips: CIPRecord[]): Record<number, CIPRecord[]> {
   const map: Record<number, CIPRecord[]> = {};
-  for (const cip of cips) {
-    const raw = String(cip.chrTicketNumbers ?? "");
-    const matches = raw.match(/\d{4,6}/g);
-    if (matches) for (const m of matches) {
-      const id = parseInt(m, 10);
-      if (!map[id]) map[id] = [];
-      map[id].push(cip);
+  for (const c of cips) {
+    const m = String(c.chrTicketNumbers ?? "").match(/\d{4,6}/g);
+    if (m) for (const x of m) {
+      const id = parseInt(x, 10);
+      (map[id] ??= []).push(c);
     }
   }
   return map;
+}
+
+function buildTfsMap(cips: CIPRecord[], tfsById: Record<number, TFSWorkItem>): Record<string, TFSWorkItem[]> {
+  const map: Record<string, TFSWorkItem[]> = {};
+  for (const c of cips) {
+    const m = String(c.chrTicketNumbers ?? "").match(/\d{4,6}/g);
+    if (!m) continue;
+    const items = m.map(x => tfsById[parseInt(x, 10)]).filter((x): x is TFSWorkItem => !!x);
+    if (items.length) map[c.id] = items;
+  }
+  return map;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function formatTime(d: Date) { return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
+
+function timeAgo(s: string | null): string {
+  if (!s) return "—";
+  const diff = Date.now() - new Date(s).getTime();
+  const m = Math.floor(diff / 60000), h = Math.floor(diff / 3600000), d = Math.floor(diff / 86400000);
+  if (m < 1) return "Just now"; if (m < 60) return `${m}m ago`;
+  if (h < 24) return `${h}h ago`; if (d < 30) return `${d}d ago`;
+  const mo = Math.floor(d / 30); return mo < 12 ? `${mo}mo ago` : `${Math.floor(mo / 12)}yr ago`;
+}
+
+function statusBadgeClass(s: string) {
+  const l = s.toLowerCase();
+  if (l === "active") return "bg-yellow-900/40 text-yellow-300 border-yellow-700/50";
+  if (l === "closed" || l === "resolved") return "bg-green-900/40 text-green-300 border-green-700/50";
+  if (l === "new") return "bg-gray-700/60 text-gray-300 border-gray-600/50";
+  if (l === "in progress") return "bg-cyan-900/40 text-cyan-300 border-cyan-700/50";
+  if (l === "code complete") return "bg-blue-900/40 text-blue-300 border-blue-700/50";
+  return "bg-gray-800/60 text-gray-400 border-gray-600/50";
+}
+
+function typeBadgeClass(t: string) {
+  const l = t.toLowerCase();
+  if (l === "bug") return "bg-red-900/30 text-red-300 border-red-700/50";
+  if (l === "user story") return "bg-blue-900/30 text-blue-300 border-blue-700/50";
+  if (l === "task") return "bg-purple-900/30 text-purple-300 border-purple-700/50";
+  return "bg-gray-800/60 text-gray-400 border-gray-600/50";
+}
+
+function shortenArea(area: string) {
+  const p = area.split("\\"); return p.length > 2 ? `…\\${p.slice(-2).join("\\")}` : area;
 }
 
 // ─── Skeleton ─────────────────────────────────────────────────────────────────
@@ -209,7 +281,7 @@ function buildCipMap(cips: CIPRecord[]): Record<number, CIPRecord[]> {
 function SkeletonRow() {
   return (
     <tr className="border-b border-gray-800/60 animate-pulse">
-      {[14, 20, 48, 20, 28, 16, 32, 8, 16].map((w, i) => (
+      {[12, 18, 48, 18, 24, 20, 20, 10, 14].map((w, i) => (
         <td key={i} className="px-4 py-3.5">
           <div className="h-3.5 bg-gray-700 rounded" style={{ width: `${w * 4}px` }} />
         </td>
@@ -221,9 +293,9 @@ function SkeletonRow() {
 // ─── PAT Override Panel ───────────────────────────────────────────────────────
 
 function PATOverridePanel({ onSaved }: { onSaved: () => void }) {
-  const [pat, setPat]       = useState("");
-  const [show, setShow]     = useState(false);
-  const [saved, setSaved]   = useState(false);
+  const [pat, setPat]     = useState("");
+  const [show, setShow]   = useState(false);
+  const [saved, setSaved] = useState(false);
   const hasSaved = typeof window !== "undefined" && !!localStorage.getItem(PAT_OVERRIDE_KEY);
 
   const handleSave = () => {
@@ -232,12 +304,7 @@ function PATOverridePanel({ onSaved }: { onSaved: () => void }) {
     setSaved(true);
     setTimeout(() => { setSaved(false); onSaved(); }, 800);
   };
-
-  const handleClear = () => {
-    localStorage.removeItem(PAT_OVERRIDE_KEY);
-    setPat("");
-    onSaved();
-  };
+  const handleClear = () => { localStorage.removeItem(PAT_OVERRIDE_KEY); setPat(""); onSaved(); };
 
   return (
     <details className="mt-3">
@@ -246,13 +313,9 @@ function PATOverridePanel({ onSaved }: { onSaved: () => void }) {
       </summary>
       <div className="mt-2 flex gap-2">
         <div className="relative flex-1">
-          <input
-            type={show ? "text" : "password"}
-            value={pat}
-            onChange={(e) => setPat(e.target.value)}
+          <input type={show ? "text" : "password"} value={pat} onChange={e => setPat(e.target.value)}
             placeholder={hasSaved ? "Override PAT saved — enter new to replace" : "Paste your personal PAT…"}
-            className="w-full bg-gray-900 border border-gray-700 text-white text-xs rounded-lg px-3 py-2 pr-8 focus:outline-none focus:border-indigo-500 font-mono placeholder:text-gray-600"
-          />
+            className="w-full bg-gray-900 border border-gray-700 text-white text-xs rounded-lg px-3 py-2 pr-8 focus:outline-none focus:border-indigo-500 font-mono placeholder:text-gray-600" />
           <button type="button" onClick={() => setShow(v => !v)}
             className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-600 hover:text-gray-400">
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -278,6 +341,204 @@ function PATOverridePanel({ onSaved }: { onSaved: () => void }) {
   );
 }
 
+// ─── Version Summary ──────────────────────────────────────────────────────────
+
+function VersionSummary({ tfsItems, cipMap }: { tfsItems: TFSWorkItem[]; cipMap: Record<number, CIPRecord[]> }) {
+  const [open, setOpen] = useState(false);
+
+  const rows = useMemo(() => {
+    const buildData: Record<string, { tfsCount: number; cipSet: Set<string> }> = {};
+    for (const item of tfsItems) {
+      const build = item.fixedInBuild || "Not Assigned";
+      if (!buildData[build]) buildData[build] = { tfsCount: 0, cipSet: new Set() };
+      buildData[build].tfsCount++;
+      for (const cip of cipMap[item.id] ?? []) buildData[build].cipSet.add(cip.id);
+    }
+    return Object.entries(buildData)
+      .map(([build, d]) => ({ build, tfsCount: d.tfsCount, cipCount: d.cipSet.size }))
+      .sort((a, b) => {
+        if (a.build === "Not Assigned") return 1;
+        if (b.build === "Not Assigned") return -1;
+        return b.tfsCount - a.tfsCount;
+      });
+  }, [tfsItems, cipMap]);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="mb-5">
+      <button onClick={() => setOpen(v => !v)}
+        className="flex items-center gap-2 text-sm font-semibold text-gray-300 hover:text-white mb-2 w-full text-left">
+        <svg className={`w-4 h-4 text-gray-500 transition-transform ${open ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+        </svg>
+        Version Summary
+        <span className="text-xs font-normal text-gray-500">({rows.length} builds)</span>
+      </button>
+      {open && (
+        <div className="bg-[#111827] border border-gray-800 rounded-xl overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-800 text-xs uppercase tracking-wider text-gray-500">
+                <th className="px-4 py-3 text-left font-semibold">Build / Version</th>
+                <th className="px-4 py-3 text-right font-semibold">TFS Items</th>
+                <th className="px-4 py-3 text-right font-semibold">CIP Incidents</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r.build} className="border-b border-gray-800/60 hover:bg-gray-800/20 transition-colors">
+                  <td className="px-4 py-2.5 font-mono text-xs text-gray-200">{r.build}</td>
+                  <td className="px-4 py-2.5 text-right text-gray-400 tabular-nums text-xs">{r.tfsCount}</td>
+                  <td className="px-4 py-2.5 text-right tabular-nums text-xs">
+                    {r.cipCount > 0
+                      ? <span className="text-indigo-400 font-medium">{r.cipCount}</span>
+                      : <span className="text-gray-600">—</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── CIP Incidents Panel ──────────────────────────────────────────────────────
+
+function CIPIncidentsPanel({
+  cipRecords,
+  tfsMap,
+  onOpenItem,
+}: {
+  cipRecords: CIPRecord[];
+  tfsMap: Record<string, TFSWorkItem[]>;
+  onOpenItem: (item: TFSWorkItem) => void;
+}) {
+  const [search, setSearch]       = useState("");
+  const [expanded, setExpanded]   = useState<Set<string>>(new Set());
+
+  const cipWithTFS = useMemo(() =>
+    cipRecords.filter(c => (tfsMap[c.id]?.length ?? 0) > 0),
+    [cipRecords, tfsMap]
+  );
+
+  const filtered = useMemo(() => {
+    if (!search) return cipWithTFS;
+    const q = search.toLowerCase();
+    return cipWithTFS.filter(c =>
+      (c.clientName ?? "").toLowerCase().includes(q) ||
+      (c.chrTicketNumbers ?? "").toLowerCase().includes(q) ||
+      (c.cipStatus ?? "").toLowerCase().includes(q) ||
+      (c.cipType ?? "").toLowerCase().includes(q)
+    );
+  }, [cipWithTFS, search]);
+
+  const toggle = (id: string) =>
+    setExpanded(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-4">
+        <div className="relative flex-1 max-w-sm">
+          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 111 11a6 6 0 0116 0z" />
+          </svg>
+          <input type="text" placeholder="Search incidents, clients, ticket numbers…" value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="w-full bg-[#1a1f2e] border border-gray-700 text-white text-sm rounded-lg pl-10 pr-3 py-2 focus:outline-none focus:border-indigo-500 placeholder:text-gray-600" />
+        </div>
+        <span className="text-xs text-gray-500 shrink-0">{filtered.length} incidents with TFS links</span>
+      </div>
+
+      <div className="space-y-2">
+        {filtered.map(cip => {
+          const items = tfsMap[cip.id] ?? [];
+          const isOpen = expanded.has(cip.id);
+          return (
+            <div key={cip.id} className="bg-[#111827] border border-gray-800 rounded-xl overflow-hidden">
+              <button onClick={() => toggle(cip.id)}
+                className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-800/30 transition-colors text-left">
+                <div className="flex items-center gap-3 min-w-0">
+                  <svg className={`w-4 h-4 text-gray-500 transition-transform shrink-0 ${isOpen ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
+                  <div className="min-w-0">
+                    <span className="text-sm font-medium text-white truncate">{cip.clientName || "—"}</span>
+                    {cip.chrTicketNumbers && (
+                      <span className="ml-2 text-xs text-gray-500 font-mono">{cip.chrTicketNumbers}</span>
+                    )}
+                    {cip.cipType && (
+                      <span className="ml-2 text-xs text-gray-600">{cip.cipType}</span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0 ml-3">
+                  <span className={`text-xs px-2 py-0.5 rounded-full border ${statusBadgeClass(cip.cipStatus ?? "")}`}>
+                    {cip.cipStatus || "—"}
+                  </span>
+                  <span className="text-xs bg-indigo-600/20 border border-indigo-500/30 text-indigo-300 px-2 py-0.5 rounded-full font-medium">
+                    {items.length} TFS
+                  </span>
+                </div>
+              </button>
+
+              {isOpen && (
+                <div className="border-t border-gray-800 p-4 space-y-3">
+                  {items.map(tfs => (
+                    <div key={tfs.id} className="bg-gray-800/30 border border-gray-700/50 rounded-lg p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button onClick={() => onOpenItem(tfs)}
+                            className="text-indigo-400 hover:text-indigo-300 font-mono font-medium text-sm hover:underline">
+                            TFS #{tfs.id}
+                          </button>
+                          <span className={`text-xs px-1.5 py-0.5 rounded border ${typeBadgeClass(tfs.type)}`}>{tfs.type}</span>
+                          <span className={`text-xs px-1.5 py-0.5 rounded border ${statusBadgeClass(tfs.status)}`}>{tfs.status}</span>
+                        </div>
+                        <span className="text-xs text-gray-500 shrink-0">{timeAgo(tfs.changedDate)}</span>
+                      </div>
+                      <p className="text-sm text-gray-200 mb-3 leading-snug">{tfs.title}</p>
+                      <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs">
+                        <div className="flex gap-1.5">
+                          <span className="text-gray-500 shrink-0">Found In:</span>
+                          <span className="text-gray-300">{tfs.foundInBuild || <span className="italic text-gray-600">Build not specified</span>}</span>
+                        </div>
+                        <div className="flex gap-1.5">
+                          <span className="text-gray-500 shrink-0">Fixed In:</span>
+                          {tfs.fixedInBuild
+                            ? <span className="text-green-300 font-medium">{tfs.fixedInBuild}</span>
+                            : <span className="italic text-gray-600">Not yet deployed</span>}
+                        </div>
+                        <div className="flex gap-1.5">
+                          <span className="text-gray-500 shrink-0">Assigned:</span>
+                          <span className="text-gray-300 truncate">{tfs.assignedTo}</span>
+                        </div>
+                        <div className="flex gap-1.5">
+                          <span className="text-gray-500 shrink-0">Area:</span>
+                          <span className="text-gray-300 truncate">{shortenArea(tfs.areaPath)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {filtered.length === 0 && (
+          <div className="text-center py-14 text-gray-500 text-sm">
+            {cipWithTFS.length === 0
+              ? "No CIP incidents have linked TFS items yet. Ensure CIP records contain TFS ticket numbers."
+              : "No incidents match your search."}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function TFSRecordsPage() {
@@ -286,35 +547,39 @@ export default function TFSRecordsPage() {
   const [cipLoading, setCipLoading]       = useState(true);
   const [tfsLoading, setTfsLoading]       = useState(false);
   const [tfsError, setTfsError]           = useState<string | null>(null);
-  const [errorCode, setErrorCode]         = useState<"NO_PAT"|"INVALID_PAT"|"NETWORK"|"CORS"|"METHOD_NOT_ALLOWED"|"OTHER"|null>(null);
+  const [errorCode, setErrorCode]         = useState<ErrorCode>(null);
   const [lastUpdated, setLastUpdated]     = useState<Date | null>(null);
   const [justRefreshed, setJustRefreshed] = useState(false);
+  const [usedFallback, setUsedFallback]   = useState(false);
+  const [capped, setCapped]               = useState(false);
+  const [dateRange, setDateRange]         = useState<DateRangeMonths>(3);
+  const [activeTab, setActiveTab]         = useState<"items" | "incidents">("items");
 
-  // Date range
-  const [dateRange, setDateRange] = useState<DateRangeMonths>(3);
-
-  // Filters
-  const [search, setSearch]                 = useState("");
-  const [selectedType, setSelectedType]     = useState("All");
+  // Filters (Work Items tab)
+  const [search, setSearch]               = useState("");
+  const [selectedType, setSelectedType]   = useState("All");
   const [selectedStatus, setSelectedStatus] = useState("All");
-  const [selectedBuild, setSelectedBuild]   = useState("All");
-  const [cipLinkedOnly, setCipLinkedOnly]   = useState(false);
+  const [selectedBuild, setSelectedBuild] = useState("All");
+  const [cipLinkedOnly, setCipLinkedOnly] = useState(false);
 
-  // Detail panel
-  const [panelItem, setPanelItem] = useState<TFSWorkItem | null>(null);
+  // Detail slide-out panel
+  const [panelItem, setPanelItem]         = useState<TFSWorkItem | null>(null);
 
-  // ── CIP TFS IDs ref (persists across renders for Refresh) ────────────────
-  const cipTFSIdsRef = useRef<number[]>([]);
+  const cipIdsRef = useRef<number[]>([]);
 
-  // ── Browser-side TFS fetch — GET only ────────────────────────────────────
-  const fetchTFS = useCallback(async (ids: number[]) => {
+  // ── Fetch ─────────────────────────────────────────────────────────────────
+  const doFetch = useCallback(async (months: DateRangeMonths, cipIds: number[]) => {
     setTfsLoading(true);
     setTfsError(null);
     setErrorCode(null);
+    setUsedFallback(false);
+    setCapped(false);
 
     try {
-      const items = await fetchTFSItemsByIds(ids);
+      const { items, usedFallback: fb, capped: cp } = await fetchAllTFSData(months, cipIds);
       setTfsItems(items);
+      setUsedFallback(fb);
+      setCapped(cp);
       setLastUpdated(new Date());
     } catch (e) {
       const err = e as Error & { code?: string };
@@ -322,68 +587,48 @@ export default function TFSRecordsPage() {
       const code = err.code;
 
       if (code === "NO_PAT") {
-        setErrorCode("NO_PAT");
-        setTfsError("NO_PAT");
-      } else if (code === "INVALID_PAT" || msg.includes("INVALID_PAT")) {
-        setErrorCode("INVALID_PAT");
-        setTfsError("INVALID_PAT");
-      } else if (code === "METHOD_NOT_ALLOWED" || msg.includes("TFS_METHOD_NOT_ALLOWED")) {
-        setErrorCode("METHOD_NOT_ALLOWED");
-        setTfsError("METHOD_NOT_ALLOWED");
+        setErrorCode("NO_PAT"); setTfsError("NO_PAT");
+      } else if (code === "INVALID_PAT") {
+        setErrorCode("INVALID_PAT"); setTfsError("INVALID_PAT");
+      } else if (code === "METHOD_NOT_ALLOWED") {
+        setErrorCode("METHOD_NOT_ALLOWED"); setTfsError("METHOD_NOT_ALLOWED");
       } else if (
-        msg.includes("Failed to fetch") ||
-        msg.includes("NetworkError")    ||
-        msg.includes("Load failed")     ||
-        msg.includes("fetch failed")    ||
-        msg.includes("CORS")
+        msg.includes("Failed to fetch") || msg.includes("NetworkError") ||
+        msg.includes("Load failed")     || msg.includes("fetch failed") || msg.includes("CORS")
       ) {
-        // Probe with no-cors to distinguish "server reachable but CORS blocked" vs "server unreachable"
         const probeUrl = `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/`;
         let isCors = false;
-        try {
-          await fetch(probeUrl, { mode: "no-cors" });
-          isCors = true; // probe succeeded → server IS reachable → CORS is the issue
-        } catch {
-          isCors = false; // probe failed → truly unreachable
-        }
+        try { await fetch(probeUrl, { mode: "no-cors" }); isCors = true; } catch { isCors = false; }
         setErrorCode(isCors ? "CORS" : "NETWORK");
         setTfsError(isCors ? "CORS" : "NETWORK");
       } else {
-        setErrorCode("OTHER");
-        setTfsError(msg);
+        setErrorCode("OTHER"); setTfsError(msg);
       }
     } finally {
       setTfsLoading(false);
     }
   }, []);
 
-  // ── Load CIP records, then fetch TFS by extracted IDs ────────────────────
+  // Load CIP records on mount, then fetch TFS
   useEffect(() => {
-    fetchCIPRecordsOnce().then((r) => {
+    fetchCIPRecordsOnce().then(r => {
       setCipRecords(r);
       setCipLoading(false);
       const ids = extractCIPTFSIds(r);
-      cipTFSIdsRef.current = ids;
-      fetchTFS(ids);
+      cipIdsRef.current = ids;
+      doFetch(3, ids);
     });
-  }, [fetchTFS]);
+  }, [doFetch]);
 
-  // ── CIP cross-reference map ───────────────────────────────────────────────
-  const cipMap = useMemo(() => buildCipMap(cipRecords), [cipRecords]);
+  // ── Derived data ───────────────────────────────────────────────────────────
+  const cipMap  = useMemo(() => buildCipMap(cipRecords), [cipRecords]);
+  const tfsById = useMemo(() => {
+    const m: Record<number, TFSWorkItem> = {};
+    for (const item of tfsItems) m[item.id] = item;
+    return m;
+  }, [tfsItems]);
+  const tfsMap = useMemo(() => buildTfsMap(cipRecords, tfsById), [cipRecords, tfsById]);
 
-  const handleDateRangeChange = (months: DateRangeMonths) => {
-    setDateRange(months); // client-side filter only — no re-fetch
-  };
-
-  const handleRefresh = async () => {
-    await fetchTFS(cipTFSIdsRef.current);
-    if (!tfsError) {
-      setJustRefreshed(true);
-      setTimeout(() => setJustRefreshed(false), 2000);
-    }
-  };
-
-  // ── Derived data ──────────────────────────────────────────────────────────
   const allBuilds = useMemo(() => {
     const set = new Set<string>();
     for (const item of tfsItems) if (item.fixedInBuild) set.add(item.fixedInBuild);
@@ -392,54 +637,67 @@ export default function TFSRecordsPage() {
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
-    const cutoff = dateRange > 0
-      ? new Date(Date.now() - dateRange * 30.44 * 24 * 3600 * 1000)
-      : null;
     return tfsItems
-      .filter((item) => {
-        if (cutoff && item.changedDate && new Date(item.changedDate) < cutoff) return false;
+      .filter(item => {
         if (q && !String(item.id).includes(q) && !item.title.toLowerCase().includes(q) &&
             !item.areaPath.toLowerCase().includes(q) && !item.tags.toLowerCase().includes(q)) return false;
-        if (selectedType   !== "All" && item.type   !== selectedType)   return false;
-        if (selectedStatus !== "All" && item.status !== selectedStatus) return false;
-        if (selectedBuild  !== "All" && item.fixedInBuild !== selectedBuild) return false;
-        if (cipLinkedOnly && !cipMap[item.id]?.length) return false;
+        if (selectedType   !== "All" && item.type          !== selectedType)   return false;
+        if (selectedStatus !== "All" && item.status        !== selectedStatus) return false;
+        if (selectedBuild  !== "All" && item.fixedInBuild  !== selectedBuild)  return false;
+        if (cipLinkedOnly  && !cipMap[item.id]?.length)                        return false;
         return true;
       })
       .sort((a, b) => b.id - a.id);
-  }, [tfsItems, dateRange, search, selectedType, selectedStatus, selectedBuild, cipLinkedOnly, cipMap]);
+  }, [tfsItems, search, selectedType, selectedStatus, selectedBuild, cipLinkedOnly, cipMap]);
 
   const kpi = useMemo(() => ({
     total:   tfsItems.length,
-    closed:  tfsItems.filter((i) => ["closed","resolved"].includes(i.status.toLowerCase())).length,
-    active:  tfsItems.filter((i) => ["active","in progress"].includes(i.status.toLowerCase())).length,
-    bugs:    tfsItems.filter((i) => i.type.toLowerCase() === "bug").length,
-    stories: tfsItems.filter((i) => i.type.toLowerCase() === "user story").length,
+    closed:  tfsItems.filter(i => ["closed", "resolved"].includes(i.status.toLowerCase())).length,
+    active:  tfsItems.filter(i => ["active", "in progress"].includes(i.status.toLowerCase())).length,
+    bugs:    tfsItems.filter(i => i.type.toLowerCase() === "bug").length,
+    stories: tfsItems.filter(i => i.type.toLowerCase() === "user story").length,
   }), [tfsItems]);
 
   const hasFilters = search || selectedType !== "All" || selectedStatus !== "All" || selectedBuild !== "All" || cipLinkedOnly;
-  const loading = cipLoading || tfsLoading;
-  const hasPAT = !!TFS_ENV_PAT;
+  const loading    = cipLoading || tfsLoading;
+  const hasPAT     = !!TFS_ENV_PAT;
 
-  // ── Export CSV ────────────────────────────────────────────────────────────
+  const handleDateRangeChange = (months: DateRangeMonths) => {
+    setDateRange(months);
+    doFetch(months, cipIdsRef.current);
+  };
+
+  const handleRefresh = async () => {
+    await doFetch(dateRange, cipIdsRef.current);
+    setJustRefreshed(true);
+    setTimeout(() => setJustRefreshed(false), 2000);
+  };
+
+  // ── Export CSV ─────────────────────────────────────────────────────────────
   const handleExportCSV = () => {
     const rows: (string | number)[][] = [
-      ["TFS ID","Type","Title","Status","Assigned To","Fixed In Build","CIP Count","Last Updated"],
-      ...filtered.map((i) => [
-        i.id, i.type, i.title, i.status, i.assignedTo, i.fixedInBuild,
-        cipMap[i.id]?.length ?? 0,
-        i.changedDate ? new Date(i.changedDate).toISOString().slice(0, 10) : "",
-      ]),
+      ["TFS ID","Type","Title","Status","Found In Build","Fixed In Build","Iteration","Area","Assigned To","Linked Incidents","Client Names","Updated Date"],
+      ...filtered.map(i => {
+        const cips = cipMap[i.id] ?? [];
+        return [
+          i.id, i.type, i.title, i.status,
+          i.foundInBuild || "", i.fixedInBuild || "",
+          i.iteration, i.areaPath, i.assignedTo,
+          cips.length,
+          cips.map(c => c.clientName).filter(Boolean).join("; "),
+          i.changedDate ? new Date(i.changedDate).toISOString().slice(0, 10) : "",
+        ];
+      }),
     ];
-    const csv  = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const csv  = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement("a"); a.href = url;
-    a.download = `TFS_Records_${new Date().toISOString().slice(0,10)}.csv`; a.click();
+    a.download = `TFS_Records_${new Date().toISOString().slice(0, 10)}.csv`; a.click();
     URL.revokeObjectURL(url);
   };
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div>
       {/* Header */}
@@ -449,11 +707,10 @@ export default function TFSRecordsPage() {
           <p className="text-sm text-gray-500 mt-0.5">Azure DevOps — Omnia360Suite Project</p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
-          {/* Date range selector */}
           <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-500 shrink-0">Filter:</span>
+            <span className="text-xs text-gray-500 shrink-0">Show:</span>
             <div className="flex rounded-lg border border-gray-700 overflow-hidden">
-              {DATE_RANGE_OPTIONS.map((opt) => (
+              {DATE_RANGE_OPTIONS.map(opt => (
                 <button key={opt.months}
                   onClick={() => !loading && handleDateRangeChange(opt.months)}
                   disabled={loading}
@@ -469,7 +726,7 @@ export default function TFSRecordsPage() {
           </div>
           {lastUpdated && (
             <span className={`text-xs transition-colors ${justRefreshed ? "text-green-400 font-medium" : "text-gray-500"}`}>
-              {justRefreshed ? "Updated!" : `Synced at ${formatTime(lastUpdated)}`}
+              {justRefreshed ? "Updated!" : `Synced ${formatTime(lastUpdated)}`}
             </span>
           )}
           <button onClick={handleRefresh} disabled={loading}
@@ -520,6 +777,23 @@ export default function TFSRecordsPage() {
         )}
       </div>
 
+      {/* Status notices */}
+      {usedFallback && !tfsError && (
+        <div className="mb-4 px-4 py-3 rounded-xl bg-blue-900/20 border border-blue-700/40 flex items-center gap-2">
+          <span className="text-blue-400 text-xs">ℹ</span>
+          <p className="text-xs text-blue-400">
+            Showing CIP-linked TFS records only — the Reporting API was unavailable. Date range filter was not applied.
+          </p>
+        </div>
+      )}
+      {capped && !tfsError && (
+        <div className="mb-4 px-4 py-3 rounded-xl bg-amber-900/20 border border-amber-700/40">
+          <p className="text-xs text-amber-400">
+            Showing first {MAX_REPORTING_ITEMS} work items. Select a shorter date range to see more specific results.
+          </p>
+        </div>
+      )}
+
       {/* Error banners */}
       {errorCode === "CORS" && (
         <div className="mb-5 px-4 py-4 rounded-xl bg-orange-900/20 border border-orange-700/40">
@@ -528,49 +802,30 @@ export default function TFSRecordsPage() {
             <div className="flex-1">
               <p className="text-sm font-semibold text-orange-300">CORS Blocked — TFS Server Reached but Request Denied</p>
               <p className="text-xs text-orange-400/90 mt-1">
-                Your browser can reach the TFS server (VPN is working), but the server is not sending
-                CORS headers that allow requests from this web app&apos;s origin.
+                Your browser can reach the TFS server (VPN is working), but the server is not returning CORS headers that allow requests from this app&apos;s origin.
               </p>
-              <p className="text-xs text-gray-500 mt-2 font-medium">To fix this, a TFS/IIS admin must add this response header to the TFS site:</p>
-              <pre className="text-xs bg-gray-900 text-green-400 rounded px-3 py-2 mt-1 overflow-x-auto">
-{`Access-Control-Allow-Origin: https://my-next-app-seven-neon.vercel.app
-Access-Control-Allow-Methods: GET, POST, OPTIONS
-Access-Control-Allow-Headers: Authorization, Content-Type, Accept`}
-              </pre>
-              <p className="text-xs text-gray-500 mt-2">
-                In IIS Manager → TFS site → HTTP Response Headers, add the above. Or ask your Azure DevOps Server admin.
-              </p>
+              <p className="text-xs text-gray-500 mt-2 font-medium">Add these headers to the TFS site&apos;s web.config in IIS:</p>
+              <pre className="text-xs bg-gray-900 text-green-400 rounded px-3 py-2 mt-1 overflow-x-auto whitespace-pre-wrap">{`Access-Control-Allow-Origin: https://my-next-app-seven-neon.vercel.app\nAccess-Control-Allow-Methods: GET, OPTIONS\nAccess-Control-Allow-Headers: Authorization, Content-Type, Accept`}</pre>
               <button onClick={handleRefresh} disabled={loading}
-                className="mt-2 text-xs text-orange-300 hover:text-orange-200 underline underline-offset-2 disabled:opacity-50">
-                Retry
-              </button>
+                className="mt-2 text-xs text-orange-300 hover:text-orange-200 underline underline-offset-2 disabled:opacity-50">Retry</button>
             </div>
           </div>
         </div>
       )}
-
       {errorCode === "NETWORK" && (
         <div className="mb-5 px-4 py-4 rounded-xl bg-yellow-900/20 border border-yellow-700/40">
           <div className="flex items-start gap-3">
             <span className="text-xl shrink-0">🌐</span>
             <div className="flex-1">
               <p className="text-sm font-semibold text-yellow-300">VPN Required — Cannot Reach TFS</p>
-              <p className="text-xs text-yellow-500/90 mt-1">
-                Your browser cannot reach the TFS server. Please make sure you are connected to the
-                company VPN and try again.
-              </p>
-              <p className="text-xs text-gray-600 mt-1 font-mono">
-                {TFS_URL}/{TFS_COLLECTION}/{TFS_PROJECT}/_apis/wit/wiql
-              </p>
+              <p className="text-xs text-yellow-500/90 mt-1">Your browser cannot reach the TFS server. Connect to the company VPN and try again.</p>
+              <p className="text-xs text-gray-600 mt-1 font-mono">{TFS_URL}/{TFS_COLLECTION}/{TFS_PROJECT}/_apis/wit/</p>
               <button onClick={handleRefresh} disabled={loading}
-                className="mt-2 text-xs text-yellow-300 hover:text-yellow-200 underline underline-offset-2 disabled:opacity-50">
-                Retry after connecting to VPN
-              </button>
+                className="mt-2 text-xs text-yellow-300 hover:text-yellow-200 underline underline-offset-2 disabled:opacity-50">Retry after connecting to VPN</button>
             </div>
           </div>
         </div>
       )}
-
       {errorCode === "NO_PAT" && (
         <div className="mb-5 px-4 py-4 rounded-xl bg-red-900/20 border border-red-700/40">
           <div className="flex items-start gap-3">
@@ -578,50 +833,39 @@ Access-Control-Allow-Headers: Authorization, Content-Type, Accept`}
             <div className="flex-1">
               <p className="text-sm font-semibold text-red-300">TFS Token Not Configured</p>
               <p className="text-xs text-red-400 mt-1">
-                No PAT found. Add <code className="bg-red-900/30 px-1 rounded">NEXT_PUBLIC_TFS_PAT</code> to
-                Vercel environment variables and redeploy, or use the override below.
+                No PAT found. Add <code className="bg-red-900/30 px-1 rounded">NEXT_PUBLIC_TFS_PAT</code> to Vercel environment variables and redeploy, or use the override below.
               </p>
-              <PATOverridePanel onSaved={() => fetchTFS(cipTFSIdsRef.current)} />
+              <PATOverridePanel onSaved={() => doFetch(dateRange, cipIdsRef.current)} />
             </div>
           </div>
         </div>
       )}
-
       {errorCode === "INVALID_PAT" && (
         <div className="mb-5 px-4 py-4 rounded-xl bg-red-900/20 border border-red-700/40">
           <div className="flex items-start gap-3">
             <span className="text-xl shrink-0">❌</span>
             <div className="flex-1">
               <p className="text-sm font-semibold text-red-300">TFS Authentication Failed</p>
-              <p className="text-xs text-red-400 mt-1">
-                The PAT is invalid or expired. Update <code className="bg-red-900/30 px-1 rounded">NEXT_PUBLIC_TFS_PAT</code> in
-                Vercel environment variables, or enter a new PAT below.
-              </p>
-              {!hasPAT && <p className="text-xs text-gray-500 mt-1">PAT source: environment variable not set — using override.</p>}
-              <PATOverridePanel onSaved={() => fetchTFS(cipTFSIdsRef.current)} />
+              <p className="text-xs text-red-400 mt-1">The PAT is invalid or expired. Update <code className="bg-red-900/30 px-1 rounded">NEXT_PUBLIC_TFS_PAT</code> in Vercel, or enter a new PAT below.</p>
+              {!hasPAT && <p className="text-xs text-gray-500 mt-1">PAT source: env variable not set — using override.</p>}
+              <PATOverridePanel onSaved={() => doFetch(dateRange, cipIdsRef.current)} />
             </div>
           </div>
         </div>
       )}
-
       {errorCode === "METHOD_NOT_ALLOWED" && (
         <div className="mb-5 px-4 py-4 rounded-xl bg-red-900/20 border border-red-700/40">
           <div className="flex items-start gap-3">
             <span className="text-xl shrink-0">⛔</span>
             <div className="flex-1">
               <p className="text-sm font-semibold text-red-300">Request Method Not Allowed (405)</p>
-              <p className="text-xs text-red-400 mt-1">
-                The TFS server rejected the request method. Only GET requests are supported.
-              </p>
+              <p className="text-xs text-red-400 mt-1">The TFS server rejected the request. Only GET requests are supported.</p>
               <button onClick={handleRefresh} disabled={loading}
-                className="mt-2 text-xs text-gray-300 hover:text-white underline underline-offset-2 disabled:opacity-50">
-                Retry
-              </button>
+                className="mt-2 text-xs text-gray-300 hover:text-white underline underline-offset-2 disabled:opacity-50">Retry</button>
             </div>
           </div>
         </div>
       )}
-
       {errorCode === "OTHER" && (
         <div className="mb-5 px-4 py-4 rounded-xl bg-red-900/20 border border-red-700/40">
           <div className="flex items-start gap-3">
@@ -630,144 +874,190 @@ Access-Control-Allow-Headers: Authorization, Content-Type, Accept`}
               <p className="text-sm font-semibold text-red-300">TFS Error</p>
               <p className="text-xs text-red-400 mt-1 font-mono break-all">{tfsError}</p>
               <button onClick={handleRefresh} disabled={loading}
-                className="mt-2 text-xs text-gray-300 hover:text-white underline underline-offset-2 disabled:opacity-50">
-                Retry
-              </button>
+                className="mt-2 text-xs text-gray-300 hover:text-white underline underline-offset-2 disabled:opacity-50">Retry</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Filters */}
+      {/* Tabs */}
       {!tfsError && (
-        <div className="flex flex-wrap gap-3 mb-4 items-center">
-          <div className="relative flex-1 min-w-[200px] max-w-xs">
-            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 111 11a6 6 0 0116 0z" />
-            </svg>
-            <input type="text" placeholder="Search TFS #, title, area…" value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full bg-[#1a1f2e] border border-gray-700 text-white text-sm rounded-lg pl-10 pr-3 py-2 focus:outline-none focus:border-indigo-500 placeholder:text-gray-600" />
+        <>
+          <div className="flex border-b border-gray-800 mb-5">
+            {([["items", "Work Items"], ["incidents", "CIP Incidents"]] as const).map(([tab, label]) => (
+              <button key={tab} onClick={() => setActiveTab(tab)}
+                className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
+                  activeTab === tab
+                    ? "border-indigo-500 text-indigo-400"
+                    : "border-transparent text-gray-500 hover:text-gray-300"
+                }`}>
+                {label}
+                {tab === "items" && !loading && tfsItems.length > 0 && (
+                  <span className="ml-2 text-xs bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded-full">{tfsItems.length}</span>
+                )}
+                {tab === "incidents" && !loading && (
+                  <span className="ml-2 text-xs bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded-full">
+                    {Object.keys(tfsMap).length}
+                  </span>
+                )}
+              </button>
+            ))}
           </div>
-          <select value={selectedType} onChange={(e) => setSelectedType(e.target.value)}
-            className="bg-[#1a1f2e] border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500 cursor-pointer">
-            <option value="All">All Types</option>
-            <option value="Bug">Bug</option>
-            <option value="User Story">User Story</option>
-            <option value="Task">Task</option>
-            <option value="Test Case">Test Case</option>
-          </select>
-          <select value={selectedStatus} onChange={(e) => setSelectedStatus(e.target.value)}
-            className="bg-[#1a1f2e] border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500 cursor-pointer">
-            <option value="All">All Statuses</option>
-            <option value="Active">Active</option>
-            <option value="Closed">Closed</option>
-            <option value="Resolved">Resolved</option>
-            <option value="New">New</option>
-            <option value="In Progress">In Progress</option>
-            <option value="Code Complete">Code Complete</option>
-            <option value="Design">Design</option>
-          </select>
-          <select value={selectedBuild} onChange={(e) => setSelectedBuild(e.target.value)}
-            className="bg-[#1a1f2e] border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500 cursor-pointer">
-            {allBuilds.map((b) => <option key={b} value={b} className="bg-gray-900">{b === "All" ? "All Builds" : b}</option>)}
-          </select>
-          <label className="flex items-center gap-2 cursor-pointer select-none" onClick={() => setCipLinkedOnly((v) => !v)}>
-            <div className={`w-10 h-5 rounded-full relative transition-colors ${cipLinkedOnly ? "bg-indigo-600" : "bg-gray-700"}`}>
-              <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-150 ${cipLinkedOnly ? "translate-x-5" : "translate-x-0.5"}`} />
-            </div>
-            <span className="text-sm text-gray-400">CIP Linked Only</span>
-          </label>
-          {hasFilters && (
-            <button onClick={() => { setSearch(""); setSelectedType("All"); setSelectedStatus("All"); setSelectedBuild("All"); setCipLinkedOnly(false); }}
-              className="text-xs text-red-400 hover:text-red-300 border border-red-500/30 px-3 py-2 rounded-lg transition-colors">
-              Clear filters
-            </button>
-          )}
-        </div>
-      )}
 
-      {/* Table */}
-      <div className="bg-[#111827] border border-gray-800 rounded-2xl overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-800">
-          <p className="text-sm font-medium text-white">
-            {loading ? "Loading…" : `${filtered.length} work item${filtered.length !== 1 ? "s" : ""}${hasFilters ? " (filtered)" : ""}`}
-          </p>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-800 text-xs uppercase tracking-wider text-gray-500">
-                <th className="px-4 py-3 text-left font-semibold">TFS ID</th>
-                <th className="px-4 py-3 text-left font-semibold">Type</th>
-                <th className="px-4 py-3 text-left font-semibold">Title</th>
-                <th className="px-4 py-3 text-left font-semibold">Status</th>
-                <th className="px-4 py-3 text-left font-semibold">Assigned To</th>
-                <th className="px-4 py-3 text-left font-semibold">Fixed In</th>
-                <th className="px-4 py-3 text-left font-semibold">Area</th>
-                <th className="px-4 py-3 text-left font-semibold">CIPs</th>
-                <th className="px-4 py-3 text-left font-semibold">Updated</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)
-              ) : filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="px-4 py-16 text-center text-gray-500 text-sm">
-                    {tfsItems.length === 0 ? "No TFS records found. Ensure CIP records have TFS ticket numbers." : "No items match your filters."}
-                  </td>
-                </tr>
-              ) : (
-                filtered.map((item) => {
-                  const linkedCips = cipMap[item.id] ?? [];
-                  return (
-                    <tr key={item.id} onClick={() => setPanelItem(item)}
-                      className="border-b border-gray-800/60 hover:bg-gray-800/30 cursor-pointer transition-colors">
-                      <td className="px-4 py-3.5">
-                        <a href={item.tfsUrl} target="_blank" rel="noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="text-indigo-400 hover:text-indigo-300 font-mono font-medium hover:underline">
-                          #{item.id}
-                        </a>
-                      </td>
-                      <td className="px-4 py-3.5">
-                        <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${
-                          item.type.toLowerCase() === "bug"        ? "bg-red-900/30 text-red-300 border-red-700/50"
-                          : item.type.toLowerCase() === "user story" ? "bg-blue-900/30 text-blue-300 border-blue-700/50"
-                          : item.type.toLowerCase() === "task"       ? "bg-purple-900/30 text-purple-300 border-purple-700/50"
-                          : "bg-gray-800/60 text-gray-400 border-gray-600/50"
-                        }`}>{item.type}</span>
-                      </td>
-                      <td className="px-4 py-3.5 max-w-xs">
-                        <span className="block truncate text-gray-200" title={item.title}>{item.title}</span>
-                      </td>
-                      <td className="px-4 py-3.5">
-                        <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${statusBadgeClass(item.status)}`}>
-                          {item.status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3.5 text-gray-400 whitespace-nowrap">{item.assignedTo}</td>
-                      <td className="px-4 py-3.5 text-gray-400 font-mono text-xs">{item.fixedInBuild || "—"}</td>
-                      <td className="px-4 py-3.5 text-gray-500 text-xs max-w-[160px]">
-                        <span className="block truncate" title={item.areaPath}>{shortenArea(item.areaPath)}</span>
-                      </td>
-                      <td className="px-4 py-3.5">
-                        {linkedCips.length > 0 ? (
-                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-indigo-600/20 border border-indigo-500/30 text-xs font-bold text-indigo-300">
-                            {linkedCips.length}
-                          </span>
-                        ) : <span className="text-gray-700">—</span>}
-                      </td>
-                      <td className="px-4 py-3.5 text-gray-500 text-xs whitespace-nowrap">{timeAgo(item.changedDate)}</td>
-                    </tr>
-                  );
-                })
+          {/* ── Work Items Tab ──────────────────────────────────────────────── */}
+          {activeTab === "items" && (
+            <>
+              {/* Version Summary */}
+              {!loading && tfsItems.length > 0 && (
+                <VersionSummary tfsItems={tfsItems} cipMap={cipMap} />
               )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+
+              {/* Filters */}
+              <div className="flex flex-wrap gap-3 mb-4 items-center">
+                <div className="relative flex-1 min-w-[200px] max-w-xs">
+                  <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 111 11a6 6 0 0116 0z" />
+                  </svg>
+                  <input type="text" placeholder="Search TFS #, title, area…" value={search}
+                    onChange={e => setSearch(e.target.value)}
+                    className="w-full bg-[#1a1f2e] border border-gray-700 text-white text-sm rounded-lg pl-10 pr-3 py-2 focus:outline-none focus:border-indigo-500 placeholder:text-gray-600" />
+                </div>
+                <select value={selectedType} onChange={e => setSelectedType(e.target.value)}
+                  className="bg-[#1a1f2e] border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500 cursor-pointer">
+                  <option value="All">All Types</option>
+                  <option value="Bug">Bug</option>
+                  <option value="User Story">User Story</option>
+                  <option value="Task">Task</option>
+                  <option value="Test Case">Test Case</option>
+                </select>
+                <select value={selectedStatus} onChange={e => setSelectedStatus(e.target.value)}
+                  className="bg-[#1a1f2e] border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500 cursor-pointer">
+                  <option value="All">All Statuses</option>
+                  <option value="Active">Active</option>
+                  <option value="Closed">Closed</option>
+                  <option value="Resolved">Resolved</option>
+                  <option value="New">New</option>
+                  <option value="In Progress">In Progress</option>
+                  <option value="Code Complete">Code Complete</option>
+                  <option value="Design">Design</option>
+                </select>
+                <select value={selectedBuild} onChange={e => setSelectedBuild(e.target.value)}
+                  className="bg-[#1a1f2e] border border-gray-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500 cursor-pointer">
+                  {allBuilds.map(b => <option key={b} value={b} className="bg-gray-900">{b === "All" ? "All Builds" : b}</option>)}
+                </select>
+                <label className="flex items-center gap-2 cursor-pointer select-none" onClick={() => setCipLinkedOnly(v => !v)}>
+                  <div className={`w-10 h-5 rounded-full relative transition-colors ${cipLinkedOnly ? "bg-indigo-600" : "bg-gray-700"}`}>
+                    <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-150 ${cipLinkedOnly ? "translate-x-5" : "translate-x-0.5"}`} />
+                  </div>
+                  <span className="text-sm text-gray-400">CIP Linked Only</span>
+                </label>
+                {hasFilters && (
+                  <button onClick={() => { setSearch(""); setSelectedType("All"); setSelectedStatus("All"); setSelectedBuild("All"); setCipLinkedOnly(false); }}
+                    className="text-xs text-red-400 hover:text-red-300 border border-red-500/30 px-3 py-2 rounded-lg transition-colors">
+                    Clear filters
+                  </button>
+                )}
+              </div>
+
+              {/* Table */}
+              <div className="bg-[#111827] border border-gray-800 rounded-2xl overflow-hidden">
+                <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-800">
+                  <p className="text-sm font-medium text-white">
+                    {loading ? "Loading…" : `${filtered.length} work item${filtered.length !== 1 ? "s" : ""}${hasFilters ? " (filtered)" : ""}`}
+                  </p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-gray-800 text-xs uppercase tracking-wider text-gray-500">
+                        <th className="px-4 py-3 text-left font-semibold">TFS ID</th>
+                        <th className="px-4 py-3 text-left font-semibold">Type</th>
+                        <th className="px-4 py-3 text-left font-semibold">Title</th>
+                        <th className="px-4 py-3 text-left font-semibold">Status</th>
+                        <th className="px-4 py-3 text-left font-semibold">Found In</th>
+                        <th className="px-4 py-3 text-left font-semibold">Fixed In</th>
+                        <th className="px-4 py-3 text-left font-semibold">Area</th>
+                        <th className="px-4 py-3 text-left font-semibold">Incidents</th>
+                        <th className="px-4 py-3 text-left font-semibold">Updated</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {loading ? (
+                        Array.from({ length: 8 }).map((_, i) => <SkeletonRow key={i} />)
+                      ) : filtered.length === 0 ? (
+                        <tr>
+                          <td colSpan={9} className="px-4 py-16 text-center text-gray-500 text-sm">
+                            {tfsItems.length === 0
+                              ? "No TFS records found for this period. Ensure CIP records have TFS ticket numbers."
+                              : "No items match your filters."}
+                          </td>
+                        </tr>
+                      ) : (
+                        filtered.map(item => {
+                          const linkedCips = cipMap[item.id] ?? [];
+                          return (
+                            <tr key={item.id} onClick={() => setPanelItem(item)}
+                              className="border-b border-gray-800/60 hover:bg-gray-800/30 cursor-pointer transition-colors">
+                              <td className="px-4 py-3.5">
+                                <a href={item.tfsUrl} target="_blank" rel="noreferrer"
+                                  onClick={e => e.stopPropagation()}
+                                  className="text-indigo-400 hover:text-indigo-300 font-mono font-medium hover:underline">
+                                  #{item.id}
+                                </a>
+                              </td>
+                              <td className="px-4 py-3.5">
+                                <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${typeBadgeClass(item.type)}`}>
+                                  {item.type}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3.5 max-w-xs">
+                                <span className="block truncate text-gray-200" title={item.title}>{item.title}</span>
+                              </td>
+                              <td className="px-4 py-3.5">
+                                <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${statusBadgeClass(item.status)}`}>
+                                  {item.status}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3.5 text-gray-400 text-xs font-mono">
+                                {item.foundInBuild || <span className="text-gray-700">—</span>}
+                              </td>
+                              <td className="px-4 py-3.5 text-xs font-mono">
+                                {item.fixedInBuild
+                                  ? <span className="text-green-400">{item.fixedInBuild}</span>
+                                  : <span className="text-gray-700">—</span>}
+                              </td>
+                              <td className="px-4 py-3.5 text-gray-500 text-xs max-w-[160px]">
+                                <span className="block truncate" title={item.areaPath}>{shortenArea(item.areaPath)}</span>
+                              </td>
+                              <td className="px-4 py-3.5">
+                                {linkedCips.length > 0 ? (
+                                  <span className="inline-flex items-center justify-center min-w-[24px] h-6 rounded-full bg-indigo-600/20 border border-indigo-500/30 text-xs font-bold text-indigo-300 px-1.5">
+                                    {linkedCips.length}
+                                  </span>
+                                ) : <span className="text-gray-700">—</span>}
+                              </td>
+                              <td className="px-4 py-3.5 text-gray-500 text-xs whitespace-nowrap">{timeAgo(item.changedDate)}</td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* ── CIP Incidents Tab ───────────────────────────────────────────── */}
+          {activeTab === "incidents" && (
+            <CIPIncidentsPanel
+              cipRecords={cipRecords}
+              tfsMap={tfsMap}
+              onOpenItem={setPanelItem}
+            />
+          )}
+        </>
+      )}
 
       {/* Detail slide-out panel */}
       {panelItem && (
@@ -776,12 +1066,9 @@ Access-Control-Allow-Headers: Authorization, Content-Type, Accept`}
           <div className="fixed right-0 top-0 bottom-0 z-50 w-full max-w-lg bg-[#0f1623] border-l border-gray-800 shadow-2xl overflow-y-auto">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 sticky top-0 bg-[#0f1623]">
               <div className="flex items-center gap-3">
-                <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${
-                  panelItem.type.toLowerCase() === "bug"        ? "bg-red-900/30 text-red-300 border-red-700/50"
-                  : panelItem.type.toLowerCase() === "user story" ? "bg-blue-900/30 text-blue-300 border-blue-700/50"
-                  : panelItem.type.toLowerCase() === "task"       ? "bg-purple-900/30 text-purple-300 border-purple-700/50"
-                  : "bg-gray-800/60 text-gray-400 border-gray-600/50"
-                }`}>{panelItem.type}</span>
+                <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${typeBadgeClass(panelItem.type)}`}>
+                  {panelItem.type}
+                </span>
                 <span className="font-mono text-indigo-400 font-medium">#{panelItem.id}</span>
               </div>
               <button onClick={() => setPanelItem(null)} className="text-gray-500 hover:text-white">
@@ -796,50 +1083,87 @@ Access-Control-Allow-Headers: Authorization, Content-Type, Accept`}
                 <a href={panelItem.tfsUrl} target="_blank" rel="noreferrer"
                   className="text-xs text-indigo-400 hover:underline mt-1 inline-block">Open in TFS ↗</a>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                {([
-                  ["Status",     <span key="s" className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${statusBadgeClass(panelItem.status)}`}>{panelItem.status}</span>],
-                  ["Assigned To", panelItem.assignedTo],
-                  ["Found In",   panelItem.foundInBuild || "—"],
-                  ["Fixed In",   panelItem.fixedInBuild || "—"],
-                  ["Created",    panelItem.createdDate ? new Date(panelItem.createdDate).toLocaleDateString() : "—"],
-                  ["Updated",    panelItem.changedDate  ? new Date(panelItem.changedDate).toLocaleDateString() : "—"],
-                ] as [string, React.ReactNode][]).map(([label, value]) => (
-                  <div key={label}>
-                    <p className="text-xs text-gray-500 mb-0.5">{label}</p>
-                    <p className="text-sm text-gray-200">{value}</p>
+
+              {/* Version details — prominent */}
+              <div className="bg-gray-800/40 border border-gray-700/60 rounded-xl p-4">
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Version Details</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <p className="text-xs text-gray-500 mb-0.5">Found In Build</p>
+                    <p className="text-sm font-medium text-gray-200">
+                      {panelItem.foundInBuild || <span className="text-gray-600 italic text-xs">Build not specified</span>}
+                    </p>
                   </div>
-                ))}
+                  <div>
+                    <p className="text-xs text-gray-500 mb-0.5">Fixed In Build</p>
+                    <p className="text-sm font-medium">
+                      {panelItem.fixedInBuild
+                        ? <span className="text-green-300">{panelItem.fixedInBuild}</span>
+                        : <span className="text-gray-600 italic text-xs">Not yet deployed to a build</span>}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500 mb-0.5">Iteration</p>
+                    <p className="text-sm text-gray-300">{panelItem.iteration || "—"}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500 mb-0.5">Area</p>
+                    <p className="text-sm text-gray-300 break-words">{panelItem.areaPath || "—"}</p>
+                  </div>
+                </div>
               </div>
-              <div><p className="text-xs text-gray-500 mb-0.5">Area Path</p><p className="text-sm text-gray-300 font-mono break-all">{panelItem.areaPath}</p></div>
-              <div><p className="text-xs text-gray-500 mb-0.5">Iteration</p><p className="text-sm text-gray-300 font-mono break-all">{panelItem.iteration}</p></div>
+
+              {/* Status & assignment */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs text-gray-500 mb-1">Status</p>
+                  <span className={`inline-flex items-center text-xs font-medium px-2 py-1 rounded-full border ${statusBadgeClass(panelItem.status)}`}>
+                    {panelItem.status}
+                  </span>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 mb-1">Assigned To</p>
+                  <p className="text-sm text-gray-300">{panelItem.assignedTo}</p>
+                </div>
+                {panelItem.createdDate && (
+                  <div>
+                    <p className="text-xs text-gray-500 mb-1">Created</p>
+                    <p className="text-sm text-gray-300">{new Date(panelItem.createdDate).toLocaleDateString()}</p>
+                  </div>
+                )}
+                {panelItem.changedDate && (
+                  <div>
+                    <p className="text-xs text-gray-500 mb-1">Last Updated</p>
+                    <p className="text-sm text-gray-300">{timeAgo(panelItem.changedDate)}</p>
+                  </div>
+                )}
+              </div>
+
               {panelItem.tags && (
                 <div>
-                  <p className="text-xs text-gray-500 mb-1.5">Tags</p>
+                  <p className="text-xs text-gray-500 mb-2">Tags</p>
                   <div className="flex flex-wrap gap-1.5">
-                    {panelItem.tags.split(";").map((t) => t.trim()).filter(Boolean).map((t) => (
-                      <span key={t} className="text-xs bg-gray-800 border border-gray-700 px-2 py-0.5 rounded-full text-gray-300">{t}</span>
+                    {panelItem.tags.split(";").map(t => t.trim()).filter(Boolean).map(tag => (
+                      <span key={tag} className="text-xs bg-gray-800 border border-gray-700 text-gray-300 px-2 py-0.5 rounded-full">{tag}</span>
                     ))}
                   </div>
                 </div>
               )}
-              {cipMap[panelItem.id]?.length > 0 && (
+
+              {/* Linked CIP incidents */}
+              {(cipMap[panelItem.id]?.length ?? 0) > 0 && (
                 <div>
-                  <p className="text-xs text-gray-500 mb-2">Linked CIP Records ({cipMap[panelItem.id].length})</p>
+                  <p className="text-xs text-gray-500 mb-2">Linked CIP Incidents ({cipMap[panelItem.id].length})</p>
                   <div className="space-y-2">
-                    {cipMap[panelItem.id].map((cip) => (
-                      <div key={cip.id} className="bg-gray-800/60 border border-gray-700 rounded-lg px-3 py-2.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-sm text-gray-200 font-medium truncate">{cip.chrTicketNumbers}</span>
-                          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border shrink-0 ${
-                            (cip.cipStatus ?? "").toLowerCase() === "approved" || (cip.cipStatus ?? "").toLowerCase() === "successful"
-                              ? "bg-emerald-900/40 text-emerald-400 border-emerald-700/50"
-                              : (cip.cipStatus ?? "").toLowerCase() === "denied"
-                              ? "bg-red-900/40 text-red-400 border-red-700/50"
-                              : "bg-gray-800 text-gray-400 border-gray-700"
-                          }`}>{cip.cipStatus ?? "—"}</span>
+                    {cipMap[panelItem.id].map(cip => (
+                      <div key={cip.id} className="flex items-center justify-between bg-gray-800/40 border border-gray-700/50 rounded-lg px-3 py-2">
+                        <div>
+                          <p className="text-sm text-white font-medium">{cip.clientName || "—"}</p>
+                          {cip.chrTicketNumbers && <p className="text-xs text-gray-500 font-mono">{cip.chrTicketNumbers}</p>}
                         </div>
-                        <p className="text-xs text-gray-500 mt-0.5 truncate">{cip.clientName ?? ""}</p>
+                        <span className={`text-xs px-2 py-0.5 rounded-full border shrink-0 ${statusBadgeClass(cip.cipStatus ?? "")}`}>
+                          {cip.cipStatus || "—"}
+                        </span>
                       </div>
                     ))}
                   </div>
