@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { fetchCIPRecordsOnce } from "@/lib/firestore";
 import { CIPRecord } from "@/lib/cip";
 
@@ -70,60 +70,48 @@ const DATE_RANGE_OPTIONS = [
 
 type DateRangeMonths = typeof DATE_RANGE_OPTIONS[number]["months"];
 
-// ─── Browser-side TFS fetch ───────────────────────────────────────────────────
+// ─── Extract TFS IDs from CIP records ────────────────────────────────────────
 
-async function fetchTFSByDateRange(months: DateRangeMonths): Promise<TFSWorkItem[]> {
+function extractCIPTFSIds(cips: CIPRecord[]): number[] {
+  const ids = new Set<number>();
+  for (const cip of cips) {
+    const raw = String(cip.chrTicketNumbers ?? "");
+    const matches = raw.match(/\d{4,6}/g);
+    if (matches) for (const m of matches) ids.add(parseInt(m, 10));
+  }
+  return [...ids];
+}
+
+// ─── Browser-side TFS fetch — GET only ───────────────────────────────────────
+
+async function fetchTFSItemsByIds(ids: number[]): Promise<TFSWorkItem[]> {
+  if (ids.length === 0) return [];
+
   const pat = getActivePAT();
   if (!pat) throw Object.assign(new Error("NO_PAT"), { code: "NO_PAT" });
 
   const auth = buildAuthHeader(pat);
-
-  // Step 1 — WIQL to get IDs
-  // Pattern: https://{instance}/{collection}/{team-project}/_apis/{area}/{resource}?api-version={version}
-  const dateClause = months > 0
-    ? (() => {
-        const d = new Date();
-        d.setMonth(d.getMonth() - months);
-        return ` AND [System.ChangedDate] >= '${d.toISOString().slice(0, 10)}'`;
-      })()
-    : "";
-
-  const wiql = {
-    query: `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '${TFS_PROJECT}'${dateClause} ORDER BY [System.ChangedDate] DESC`,
-  };
-
-  const wiqlUrl = `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/wiql?api-version=${TFS_API_VER}`;
-
-  const wiqlRes = await fetch(wiqlUrl, {
-    method: "POST",
-    headers: { Authorization: auth, "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify(wiql),
-  });
-
-  if (wiqlRes.status === 401 || wiqlRes.status === 403) {
-    throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
-  }
-  if (!wiqlRes.ok) {
-    const txt = await wiqlRes.text().catch(() => "");
-    throw new Error(`TFS WIQL error ${wiqlRes.status}: ${txt.slice(0, 200)}`);
-  }
-
-  const wiqlData = await wiqlRes.json() as { workItems?: { id: number }[] };
-  const ids = (wiqlData.workItems ?? []).map((w) => w.id);
-  if (ids.length === 0) return [];
-
-  // Step 2 — batch fetch work item details (200 per request)
   const all: TFSWorkItem[] = [];
+
   for (let i = 0; i < ids.length; i += 200) {
     const batch = ids.slice(i, i + 200);
-    const url = `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/workitems?ids=${batch.join(",")}&fields=${TFS_FIELDS}&api-version=${TFS_API_VER}`;
+    // GET — all params in query string, no body
+    const url =
+      `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/workitems` +
+      `?ids=${batch.join(",")}` +
+      `&fields=${TFS_FIELDS}` +
+      `&api-version=${TFS_API_VER}`;
 
     const res = await fetch(url, {
+      method: "GET",
       headers: { Authorization: auth, Accept: "application/json" },
     });
 
     if (res.status === 401 || res.status === 403) {
       throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
+    }
+    if (res.status === 405) {
+      throw Object.assign(new Error("TFS_METHOD_NOT_ALLOWED"), { code: "METHOD_NOT_ALLOWED" });
     }
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
@@ -156,6 +144,11 @@ async function fetchTFSByDateRange(months: DateRangeMonths): Promise<TFSWorkItem
         tags:         String(f["System.Tags"]          ?? ""),
         tfsUrl:       `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_workitems/edit/${id}`,
       });
+    }
+
+    // Small delay between batches to avoid flooding the server
+    if (i + 200 < ids.length) {
+      await new Promise((r) => setTimeout(r, 300));
     }
   }
 
@@ -293,7 +286,7 @@ export default function TFSRecordsPage() {
   const [cipLoading, setCipLoading]       = useState(true);
   const [tfsLoading, setTfsLoading]       = useState(false);
   const [tfsError, setTfsError]           = useState<string | null>(null);
-  const [errorCode, setErrorCode]         = useState<"NO_PAT"|"INVALID_PAT"|"NETWORK"|"CORS"|"OTHER"|null>(null);
+  const [errorCode, setErrorCode]         = useState<"NO_PAT"|"INVALID_PAT"|"NETWORK"|"CORS"|"METHOD_NOT_ALLOWED"|"OTHER"|null>(null);
   const [lastUpdated, setLastUpdated]     = useState<Date | null>(null);
   const [justRefreshed, setJustRefreshed] = useState(false);
 
@@ -310,22 +303,17 @@ export default function TFSRecordsPage() {
   // Detail panel
   const [panelItem, setPanelItem] = useState<TFSWorkItem | null>(null);
 
-  // ── Load CIP records ──────────────────────────────────────────────────────
-  useEffect(() => {
-    fetchCIPRecordsOnce().then((r) => { setCipRecords(r); setCipLoading(false); });
-  }, []);
+  // ── CIP TFS IDs ref (persists across renders for Refresh) ────────────────
+  const cipTFSIdsRef = useRef<number[]>([]);
 
-  // ── CIP cross-reference map ───────────────────────────────────────────────
-  const cipMap = useMemo(() => buildCipMap(cipRecords), [cipRecords]);
-
-  // ── Browser-side TFS fetch ────────────────────────────────────────────────
-  const fetchTFS = useCallback(async (months: DateRangeMonths) => {
+  // ── Browser-side TFS fetch — GET only ────────────────────────────────────
+  const fetchTFS = useCallback(async (ids: number[]) => {
     setTfsLoading(true);
     setTfsError(null);
     setErrorCode(null);
 
     try {
-      const items = await fetchTFSByDateRange(months);
+      const items = await fetchTFSItemsByIds(ids);
       setTfsItems(items);
       setLastUpdated(new Date());
     } catch (e) {
@@ -339,6 +327,9 @@ export default function TFSRecordsPage() {
       } else if (code === "INVALID_PAT" || msg.includes("INVALID_PAT")) {
         setErrorCode("INVALID_PAT");
         setTfsError("INVALID_PAT");
+      } else if (code === "METHOD_NOT_ALLOWED" || msg.includes("TFS_METHOD_NOT_ALLOWED")) {
+        setErrorCode("METHOD_NOT_ALLOWED");
+        setTfsError("METHOD_NOT_ALLOWED");
       } else if (
         msg.includes("Failed to fetch") ||
         msg.includes("NetworkError")    ||
@@ -366,16 +357,26 @@ export default function TFSRecordsPage() {
     }
   }, []);
 
-  // Auto-fetch on mount
-  useEffect(() => { fetchTFS(dateRange); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // ── Load CIP records, then fetch TFS by extracted IDs ────────────────────
+  useEffect(() => {
+    fetchCIPRecordsOnce().then((r) => {
+      setCipRecords(r);
+      setCipLoading(false);
+      const ids = extractCIPTFSIds(r);
+      cipTFSIdsRef.current = ids;
+      fetchTFS(ids);
+    });
+  }, [fetchTFS]);
+
+  // ── CIP cross-reference map ───────────────────────────────────────────────
+  const cipMap = useMemo(() => buildCipMap(cipRecords), [cipRecords]);
 
   const handleDateRangeChange = (months: DateRangeMonths) => {
-    setDateRange(months);
-    fetchTFS(months);
+    setDateRange(months); // client-side filter only — no re-fetch
   };
 
   const handleRefresh = async () => {
-    await fetchTFS(dateRange);
+    await fetchTFS(cipTFSIdsRef.current);
     if (!tfsError) {
       setJustRefreshed(true);
       setTimeout(() => setJustRefreshed(false), 2000);
@@ -391,8 +392,12 @@ export default function TFSRecordsPage() {
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
+    const cutoff = dateRange > 0
+      ? new Date(Date.now() - dateRange * 30.44 * 24 * 3600 * 1000)
+      : null;
     return tfsItems
       .filter((item) => {
+        if (cutoff && item.changedDate && new Date(item.changedDate) < cutoff) return false;
         if (q && !String(item.id).includes(q) && !item.title.toLowerCase().includes(q) &&
             !item.areaPath.toLowerCase().includes(q) && !item.tags.toLowerCase().includes(q)) return false;
         if (selectedType   !== "All" && item.type   !== selectedType)   return false;
@@ -402,7 +407,7 @@ export default function TFSRecordsPage() {
         return true;
       })
       .sort((a, b) => b.id - a.id);
-  }, [tfsItems, search, selectedType, selectedStatus, selectedBuild, cipLinkedOnly, cipMap]);
+  }, [tfsItems, dateRange, search, selectedType, selectedStatus, selectedBuild, cipLinkedOnly, cipMap]);
 
   const kpi = useMemo(() => ({
     total:   tfsItems.length,
@@ -446,7 +451,7 @@ export default function TFSRecordsPage() {
         <div className="flex items-center gap-3 flex-wrap">
           {/* Date range selector */}
           <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-500 shrink-0">Show:</span>
+            <span className="text-xs text-gray-500 shrink-0">Filter:</span>
             <div className="flex rounded-lg border border-gray-700 overflow-hidden">
               {DATE_RANGE_OPTIONS.map((opt) => (
                 <button key={opt.months}
@@ -576,7 +581,7 @@ Access-Control-Allow-Headers: Authorization, Content-Type, Accept`}
                 No PAT found. Add <code className="bg-red-900/30 px-1 rounded">NEXT_PUBLIC_TFS_PAT</code> to
                 Vercel environment variables and redeploy, or use the override below.
               </p>
-              <PATOverridePanel onSaved={() => fetchTFS(dateRange)} />
+              <PATOverridePanel onSaved={() => fetchTFS(cipTFSIdsRef.current)} />
             </div>
           </div>
         </div>
@@ -593,7 +598,25 @@ Access-Control-Allow-Headers: Authorization, Content-Type, Accept`}
                 Vercel environment variables, or enter a new PAT below.
               </p>
               {!hasPAT && <p className="text-xs text-gray-500 mt-1">PAT source: environment variable not set — using override.</p>}
-              <PATOverridePanel onSaved={() => fetchTFS(dateRange)} />
+              <PATOverridePanel onSaved={() => fetchTFS(cipTFSIdsRef.current)} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {errorCode === "METHOD_NOT_ALLOWED" && (
+        <div className="mb-5 px-4 py-4 rounded-xl bg-red-900/20 border border-red-700/40">
+          <div className="flex items-start gap-3">
+            <span className="text-xl shrink-0">⛔</span>
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-red-300">Request Method Not Allowed (405)</p>
+              <p className="text-xs text-red-400 mt-1">
+                The TFS server rejected the request method. Only GET requests are supported.
+              </p>
+              <button onClick={handleRefresh} disabled={loading}
+                className="mt-2 text-xs text-gray-300 hover:text-white underline underline-offset-2 disabled:opacity-50">
+                Retry
+              </button>
             </div>
           </div>
         </div>
@@ -692,7 +715,7 @@ Access-Control-Allow-Headers: Authorization, Content-Type, Accept`}
               ) : filtered.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="px-4 py-16 text-center text-gray-500 text-sm">
-                    {tfsItems.length === 0 ? "No TFS records found for this date range." : "No items match your filters."}
+                    {tfsItems.length === 0 ? "No TFS records found. Ensure CIP records have TFS ticket numbers." : "No items match your filters."}
                   </td>
                 </tr>
               ) : (
