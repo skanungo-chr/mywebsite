@@ -416,7 +416,7 @@ function buildVersionGroups(tfsItems: TFSWorkItem[], cipMap: Record<number, CIPR
     const build = item.fixedInBuild?.trim();
     if (!build) continue; // skip items with no Fixed In Build
     if (!byBuild[build]) byBuild[build] = { buildName: build, tfsItems: [], totalTFSItems: 0, totalIncidents: 0 };
-    const linkedCips = (cipMap[item.id] ?? []).filter(c => !c.id.toUpperCase().startsWith("CHR-"));
+    const linkedCips = (cipMap[item.id] ?? []).filter(c => !String(c.chrTicketNumbers ?? "").toUpperCase().startsWith("CHR-"));
     byBuild[build].tfsItems.push({ ...item, linkedCips });
     byBuild[build].totalTFSItems++;
     byBuild[build].totalIncidents += linkedCips.length;
@@ -691,7 +691,7 @@ function CIPIncidentsPanel({
   const [expanded, setExpanded]   = useState<Set<string>>(new Set());
 
   const cipWithTFS = useMemo(() =>
-    cipRecords.filter(c => (tfsMap[c.id]?.length ?? 0) > 0 && !c.id.toUpperCase().startsWith("CHR-")),
+    cipRecords.filter(c => (tfsMap[c.id]?.length ?? 0) > 0 && !String(c.chrTicketNumbers ?? "").toUpperCase().startsWith("CHR-")),
     [cipRecords, tfsMap]
   );
 
