@@ -119,92 +119,129 @@ async function fetchTFSItemsByIds(ids: number[], auth: string): Promise<TFSWorkI
   return all;
 }
 
-// ─── GET date-range via Reporting API (collection-level endpoint) ─────────────
-// GET {collection}/_apis/wit/reporting/workitems?startDateTime=...&project=...
+// ─── Reporting API — fetches ALL items changed since fromDate ─────────────────
+// Tries collection-level first, then project-level. api-version 2.0 is required
+// for the Reporting API (not 6.0).
 
-async function fetchIdsByDateRange(months: DateRangeMonths, auth: string): Promise<{ ids: number[], capped: boolean }> {
+async function fetchViaReportingAPI(months: DateRangeMonths, auth: string): Promise<{ items: TFSWorkItem[], capped: boolean }> {
   const fromDate = months > 0
-    ? (() => { const d = new Date(); d.setMonth(d.getMonth() - months); return d.toISOString(); })()
+    ? (() => { const d = new Date(); d.setMonth(d.getMonth() - months); return d.toISOString().slice(0, 19) + "Z"; })()
     : "2020-01-01T00:00:00Z";
 
-  const ids: number[] = [];
-  let token: string | null = null;
-  let isLast = false;
+  // Try two URL patterns: collection-level and project-level
+  const baseUrls = [
+    `${TFS_URL}/${TFS_COLLECTION}/_apis/wit/reporting/workitems`,
+    `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/reporting/workitems`,
+  ];
 
-  do {
-    let url =
-      `${TFS_URL}/${TFS_COLLECTION}/_apis/wit/reporting/workitems` +
-      `?startDateTime=${encodeURIComponent(fromDate)}` +
-      `&project=${encodeURIComponent(TFS_PROJECT)}` +
-      `&fields=System.Id` +
-      `&api-version=${TFS_API_VER}`;
-    if (token) url += `&continuationToken=${encodeURIComponent(token)}`;
+  let lastError = "";
 
-    const res = await fetch(url, { method: "GET", headers: { Authorization: auth, Accept: "application/json" } });
-    if (res.status === 401 || res.status === 403) throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
-    if (res.status === 405) throw Object.assign(new Error("TFS_METHOD_NOT_ALLOWED"), { code: "METHOD_NOT_ALLOWED" });
-    if (!res.ok) throw new Error(`REPORTING_API_UNAVAILABLE:${res.status}`);
+  for (const baseUrl of baseUrls) {
+    const items: TFSWorkItem[] = [];
+    let token: string | null = null;
+    let isLast = false;
+    let succeeded = false;
 
-    const data = await res.json() as {
-      values?: Record<string, unknown>[];
-      nextLink?: string;
-      isLastBatch?: boolean;
-      continuationToken?: string;
-    };
+    try {
+      do {
+        const params = new URLSearchParams({
+          startDateTime: fromDate,
+          project: TFS_PROJECT,
+          fields: TFS_FIELDS,
+          "api-version": "2.0",   // Reporting API requires 2.0, not 6.0
+        });
+        if (token) params.set("continuationToken", token);
 
-    for (const v of data.values ?? []) {
-      const f = (typeof v.fields === "object" && v.fields !== null ? v.fields : v) as Record<string, unknown>;
-      const id = Number(v.id ?? f["System.Id"]);
-      if (id) ids.push(id);
+        const url = `${baseUrl}?${params}`;
+        const res = await fetch(url, { method: "GET", headers: { Authorization: auth, Accept: "application/json" } });
+
+        if (res.status === 401 || res.status === 403) throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
+        if (res.status === 405) throw Object.assign(new Error("TFS_METHOD_NOT_ALLOWED"), { code: "METHOD_NOT_ALLOWED" });
+        if (!res.ok) {
+          const body = await res.text().catch(() => "");
+          throw new Error(`HTTP ${res.status}: ${body.slice(0, 150)}`);
+        }
+
+        const data = await res.json() as {
+          values?: Record<string, unknown>[];
+          nextLink?: string;
+          isLastBatch?: boolean;
+          continuationToken?: string;
+        };
+
+        for (const v of data.values ?? []) {
+          const item = mapWorkItem(v);
+          if (item) items.push(item);
+        }
+
+        succeeded = true;
+        isLast = data.isLastBatch ?? true;
+        token = data.continuationToken ?? null;
+        if (!token && data.nextLink) {
+          const m = data.nextLink.match(/continuationToken=([^&]+)/i);
+          token = m ? decodeURIComponent(m[1]) : null;
+        }
+        if (items.length >= MAX_REPORTING_ITEMS) return { items, capped: true };
+      } while (!isLast && token);
+
+      if (succeeded) return { items, capped: false };
+    } catch (err) {
+      const e = err as Error & { code?: string };
+      if (e.code === "INVALID_PAT" || e.code === "METHOD_NOT_ALLOWED") throw err;
+      lastError = e.message;
+      // try next URL pattern
     }
+  }
 
-    isLast = data.isLastBatch ?? true;
-    token = data.continuationToken ?? null;
-    if (!token && data.nextLink) {
-      const m = data.nextLink.match(/continuationToken=([^&]+)/i);
-      token = m ? decodeURIComponent(m[1]) : null;
-    }
-
-    if (ids.length >= MAX_REPORTING_ITEMS) return { ids, capped: true };
-  } while (!isLast && token);
-
-  return { ids, capped: false };
+  throw new Error(`REPORTING_UNAVAILABLE: ${lastError}`);
 }
 
 // ─── Combined fetch strategy ──────────────────────────────────────────────────
-// 1. Try Reporting API (GET, date-range, all items)
+// 1. Try Reporting API (GET, date-range, all items, api-version=2.0)
 // 2. If unavailable, fall back to CIP-extracted IDs only
-// 3. Always also include CIP-linked IDs (may be outside date range)
+// 3. Always also merge in CIP-linked IDs (may be outside the date range)
 
 async function fetchAllTFSData(months: DateRangeMonths, cipIds: number[]): Promise<{
   items: TFSWorkItem[];
   usedFallback: boolean;
+  fallbackReason: string;
   capped: boolean;
 }> {
   const pat = getActivePAT();
   if (!pat) throw Object.assign(new Error("NO_PAT"), { code: "NO_PAT" });
   const auth = buildAuthHeader(pat);
 
-  let rangeIds: number[] = [];
+  let rangeItems: TFSWorkItem[] = [];
   let usedFallback = false;
+  let fallbackReason = "";
   let capped = false;
 
   try {
-    const r = await fetchIdsByDateRange(months, auth);
-    rangeIds = r.ids;
+    const r = await fetchViaReportingAPI(months, auth);
+    rangeItems = r.items;
     capped = r.capped;
   } catch (err) {
     const e = err as Error & { code?: string };
     if (e.code === "INVALID_PAT" || e.code === "METHOD_NOT_ALLOWED") throw err;
     usedFallback = true;
+    fallbackReason = e.message;
   }
 
-  // Merge range IDs with CIP-linked IDs
-  const allIds = new Set(usedFallback ? cipIds : rangeIds);
-  for (const id of cipIds) allIds.add(id); // always include CIP-linked items
+  // Always merge CIP-linked IDs so linked items always appear
+  const rangeById = new Map(rangeItems.map(i => [i.id, i]));
+  const missingCipIds = cipIds.filter(id => !rangeById.has(id));
+  if (missingCipIds.length > 0) {
+    const extra = await fetchTFSItemsByIds(missingCipIds, auth);
+    for (const item of extra) rangeById.set(item.id, item);
+  }
 
-  const items = await fetchTFSItemsByIds([...allIds], auth);
-  return { items, usedFallback, capped };
+  if (usedFallback) {
+    // Fallback: fetch only CIP-linked IDs
+    const fallbackItems = await fetchTFSItemsByIds(cipIds, auth);
+    return { items: fallbackItems, usedFallback, fallbackReason, capped: false };
+  }
+
+  return { items: [...rangeById.values()], usedFallback, fallbackReason, capped };
 }
 
 // ─── CIP helpers ──────────────────────────────────────────────────────────────
@@ -551,6 +588,7 @@ export default function TFSRecordsPage() {
   const [lastUpdated, setLastUpdated]     = useState<Date | null>(null);
   const [justRefreshed, setJustRefreshed] = useState(false);
   const [usedFallback, setUsedFallback]   = useState(false);
+  const [fallbackReason, setFallbackReason] = useState("");
   const [capped, setCapped]               = useState(false);
   const [dateRange, setDateRange]         = useState<DateRangeMonths>(3);
   const [activeTab, setActiveTab]         = useState<"items" | "incidents">("items");
@@ -573,12 +611,14 @@ export default function TFSRecordsPage() {
     setTfsError(null);
     setErrorCode(null);
     setUsedFallback(false);
+    setFallbackReason("");
     setCapped(false);
 
     try {
-      const { items, usedFallback: fb, capped: cp } = await fetchAllTFSData(months, cipIds);
+      const { items, usedFallback: fb, fallbackReason: fr, capped: cp } = await fetchAllTFSData(months, cipIds);
       setTfsItems(items);
       setUsedFallback(fb);
+      setFallbackReason(fr);
       setCapped(cp);
       setLastUpdated(new Date());
     } catch (e) {
@@ -779,11 +819,13 @@ export default function TFSRecordsPage() {
 
       {/* Status notices */}
       {usedFallback && !tfsError && (
-        <div className="mb-4 px-4 py-3 rounded-xl bg-blue-900/20 border border-blue-700/40 flex items-center gap-2">
-          <span className="text-blue-400 text-xs">ℹ</span>
-          <p className="text-xs text-blue-400">
-            Showing CIP-linked TFS records only — the Reporting API was unavailable. Date range filter was not applied.
+        <div className="mb-4 px-4 py-3 rounded-xl bg-blue-900/20 border border-blue-700/40">
+          <p className="text-xs text-blue-300 font-medium mb-1">
+            Showing CIP-linked records only — Reporting API unavailable. Date range not applied.
           </p>
+          {fallbackReason && (
+            <p className="text-xs text-blue-500/80 font-mono break-all">{fallbackReason}</p>
+          )}
         </div>
       )}
       {capped && !tfsError && (
