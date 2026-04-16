@@ -22,6 +22,41 @@ interface TFSWorkItem {
   tfsUrl:       string;
 }
 
+// ─── TFS Config (NEXT_PUBLIC_ vars — embedded in browser bundle at build time) ─
+
+const TFS_URL        = (process.env.NEXT_PUBLIC_TFS_URL        ?? "https://ado.chrsolutions.com/tfs").replace(/\/+$/, "").trim();
+const TFS_COLLECTION = (process.env.NEXT_PUBLIC_TFS_COLLECTION ?? "CHR").trim();
+const TFS_PROJECT    = (process.env.NEXT_PUBLIC_TFS_PROJECT    ?? "Omnia360Suite").trim();
+const TFS_API_VER    = (process.env.NEXT_PUBLIC_TFS_API_VERSION ?? "6.0").trim();
+const TFS_ENV_PAT    =  process.env.NEXT_PUBLIC_TFS_PAT        ?? "";
+
+const PAT_OVERRIDE_KEY = "tfs_pat_override";
+
+const TFS_FIELDS = [
+  "System.Id",
+  "System.Title",
+  "System.State",
+  "System.WorkItemType",
+  "System.AssignedTo",
+  "System.CreatedDate",
+  "System.ChangedDate",
+  "Microsoft.VSTS.Build.FoundIn",
+  "Microsoft.VSTS.Build.IntegrationBuild",
+  "System.Tags",
+  "System.AreaPath",
+  "System.IterationPath",
+].join(",");
+
+function getActivePAT(): string {
+  if (typeof window === "undefined") return TFS_ENV_PAT;
+  const override = localStorage.getItem(PAT_OVERRIDE_KEY);
+  return (override ?? TFS_ENV_PAT).trim();
+}
+
+function buildAuthHeader(pat: string): string {
+  return `Basic ${btoa(`:${pat}`)}`;
+}
+
 // ─── Date range ───────────────────────────────────────────────────────────────
 
 const DATE_RANGE_OPTIONS = [
@@ -34,6 +69,98 @@ const DATE_RANGE_OPTIONS = [
 ] as const;
 
 type DateRangeMonths = typeof DATE_RANGE_OPTIONS[number]["months"];
+
+// ─── Browser-side TFS fetch ───────────────────────────────────────────────────
+
+async function fetchTFSByDateRange(months: DateRangeMonths): Promise<TFSWorkItem[]> {
+  const pat = getActivePAT();
+  if (!pat) throw Object.assign(new Error("NO_PAT"), { code: "NO_PAT" });
+
+  const auth = buildAuthHeader(pat);
+
+  // Step 1 — WIQL to get IDs
+  // Pattern: https://{instance}/{collection}/{team-project}/_apis/{area}/{resource}?api-version={version}
+  const dateClause = months > 0
+    ? (() => {
+        const d = new Date();
+        d.setMonth(d.getMonth() - months);
+        return ` AND [System.ChangedDate] >= '${d.toISOString().slice(0, 10)}'`;
+      })()
+    : "";
+
+  const wiql = {
+    query: `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '${TFS_PROJECT}'${dateClause} ORDER BY [System.ChangedDate] DESC`,
+  };
+
+  const wiqlUrl = `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/wiql?api-version=${TFS_API_VER}`;
+
+  const wiqlRes = await fetch(wiqlUrl, {
+    method: "POST",
+    headers: { Authorization: auth, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(wiql),
+  });
+
+  if (wiqlRes.status === 401 || wiqlRes.status === 403) {
+    throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
+  }
+  if (!wiqlRes.ok) {
+    const txt = await wiqlRes.text().catch(() => "");
+    throw new Error(`TFS WIQL error ${wiqlRes.status}: ${txt.slice(0, 200)}`);
+  }
+
+  const wiqlData = await wiqlRes.json() as { workItems?: { id: number }[] };
+  const ids = (wiqlData.workItems ?? []).map((w) => w.id);
+  if (ids.length === 0) return [];
+
+  // Step 2 — batch fetch work item details (200 per request)
+  const all: TFSWorkItem[] = [];
+  for (let i = 0; i < ids.length; i += 200) {
+    const batch = ids.slice(i, i + 200);
+    const url = `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/workitems?ids=${batch.join(",")}&fields=${TFS_FIELDS}&api-version=${TFS_API_VER}`;
+
+    const res = await fetch(url, {
+      headers: { Authorization: auth, Accept: "application/json" },
+    });
+
+    if (res.status === 401 || res.status === 403) {
+      throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
+    }
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw new Error(`TFS work items error ${res.status}: ${txt.slice(0, 200)}`);
+    }
+
+    const data = await res.json() as { value?: unknown[] };
+    for (const raw of (data.value ?? []) as Record<string, unknown>[]) {
+      const f = (raw.fields ?? {}) as Record<string, unknown>;
+      const id = Number(raw.id);
+      const assigned = f["System.AssignedTo"];
+      const assignedTo = assigned
+        ? typeof assigned === "object"
+          ? String((assigned as Record<string, unknown>).displayName ?? "Unassigned")
+          : String(assigned).replace(/<[^>]+>/, "").trim() || "Unassigned"
+        : "Unassigned";
+
+      all.push({
+        id,
+        title:        String(f["System.Title"]                          ?? ""),
+        status:       String(f["System.State"]                          ?? ""),
+        type:         String(f["System.WorkItemType"]                   ?? ""),
+        assignedTo,
+        foundInBuild: String(f["Microsoft.VSTS.Build.FoundIn"]          ?? ""),
+        fixedInBuild: String(f["Microsoft.VSTS.Build.IntegrationBuild"] ?? ""),
+        createdDate:  f["System.CreatedDate"] ? String(f["System.CreatedDate"]) : null,
+        changedDate:  f["System.ChangedDate"] ? String(f["System.ChangedDate"]) : null,
+        areaPath:     String(f["System.AreaPath"]      ?? ""),
+        iteration:    String(f["System.IterationPath"] ?? ""),
+        tags:         String(f["System.Tags"]          ?? ""),
+        tfsUrl:       `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_workitems/edit/${id}`,
+      });
+    }
+  }
+
+  return all;
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -98,6 +225,66 @@ function SkeletonRow() {
   );
 }
 
+// ─── PAT Override Panel ───────────────────────────────────────────────────────
+
+function PATOverridePanel({ onSaved }: { onSaved: () => void }) {
+  const [pat, setPat]       = useState("");
+  const [show, setShow]     = useState(false);
+  const [saved, setSaved]   = useState(false);
+  const hasSaved = typeof window !== "undefined" && !!localStorage.getItem(PAT_OVERRIDE_KEY);
+
+  const handleSave = () => {
+    if (!pat.trim()) return;
+    localStorage.setItem(PAT_OVERRIDE_KEY, pat.trim());
+    setSaved(true);
+    setTimeout(() => { setSaved(false); onSaved(); }, 800);
+  };
+
+  const handleClear = () => {
+    localStorage.removeItem(PAT_OVERRIDE_KEY);
+    setPat("");
+    onSaved();
+  };
+
+  return (
+    <details className="mt-3">
+      <summary className="text-xs text-gray-500 hover:text-gray-300 cursor-pointer select-none">
+        Override PAT (optional — use your own token)
+      </summary>
+      <div className="mt-2 flex gap-2">
+        <div className="relative flex-1">
+          <input
+            type={show ? "text" : "password"}
+            value={pat}
+            onChange={(e) => setPat(e.target.value)}
+            placeholder={hasSaved ? "Override PAT saved — enter new to replace" : "Paste your personal PAT…"}
+            className="w-full bg-gray-900 border border-gray-700 text-white text-xs rounded-lg px-3 py-2 pr-8 focus:outline-none focus:border-indigo-500 font-mono placeholder:text-gray-600"
+          />
+          <button type="button" onClick={() => setShow(v => !v)}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-600 hover:text-gray-400">
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              {show
+                ? <path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88" />
+                : <><path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></>
+              }
+            </svg>
+          </button>
+        </div>
+        <button onClick={handleSave} disabled={!pat.trim()}
+          className="text-xs bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white px-3 py-2 rounded-lg transition-colors">
+          {saved ? "Saved!" : "Save"}
+        </button>
+        {hasSaved && (
+          <button onClick={handleClear}
+            className="text-xs bg-red-900/40 hover:bg-red-900/60 text-red-400 px-3 py-2 rounded-lg transition-colors">
+            Clear
+          </button>
+        )}
+      </div>
+    </details>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function TFSRecordsPage() {
@@ -106,9 +293,7 @@ export default function TFSRecordsPage() {
   const [cipLoading, setCipLoading]       = useState(true);
   const [tfsLoading, setTfsLoading]       = useState(false);
   const [tfsError, setTfsError]           = useState<string | null>(null);
-  const [errorCode, setErrorCode]         = useState<"auth"|"config"|"network"|"other"|null>(null);
-  const [networkReason, setNetworkReason] = useState<string | null>(null);
-  const [diagnostics, setDiagnostics]     = useState<Record<string, string> | null>(null);
+  const [errorCode, setErrorCode]         = useState<"NO_PAT"|"INVALID_PAT"|"NETWORK"|"OTHER"|null>(null);
   const [lastUpdated, setLastUpdated]     = useState<Date | null>(null);
   const [justRefreshed, setJustRefreshed] = useState(false);
 
@@ -133,68 +318,47 @@ export default function TFSRecordsPage() {
   // ── CIP cross-reference map ───────────────────────────────────────────────
   const cipMap = useMemo(() => buildCipMap(cipRecords), [cipRecords]);
 
-  // ── Fetch TFS via server-side API route ───────────────────────────────────
+  // ── Browser-side TFS fetch ────────────────────────────────────────────────
   const fetchTFS = useCallback(async (months: DateRangeMonths) => {
     setTfsLoading(true);
     setTfsError(null);
     setErrorCode(null);
-    setNetworkReason(null);
-    setDiagnostics(null);
 
     try {
-      const res = await fetch("/api/tfs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ months }),
-      });
-
-      const ct = res.headers.get("content-type") ?? "";
-      if (!ct.includes("application/json")) {
-        const text = await res.text();
-        if (res.status === 504 || res.status === 502) {
-          setTfsError("Gateway timeout — TFS did not respond in time. Try a shorter date range.");
-          setErrorCode("network");
-          return;
-        }
-        setTfsError(`Unexpected response (${res.status}): ${text.slice(0, 200)}`);
-        setErrorCode("other");
-        return;
-      }
-
-      const data = await res.json() as Record<string, unknown>;
-
-      if (!res.ok) {
-        const msg = String(data.error ?? "Unknown error");
-        if (res.status === 401 || res.status === 403) {
-          setTfsError(msg); setErrorCode("auth");
-        } else if (res.status === 500 && msg.includes("not configured")) {
-          setTfsError(msg); setErrorCode("config");
-        } else if (res.status === 503 || Boolean(data.isNetwork)) {
-          setTfsError(msg);
-          setErrorCode("network");
-          if (data.networkReason) setNetworkReason(String(data.networkReason));
-          if (data.diagnostics)   setDiagnostics(data.diagnostics as Record<string, string>);
-        } else {
-          setTfsError(msg); setErrorCode("other");
-        }
-        return;
-      }
-
-      setTfsItems((data.items as TFSWorkItem[]) ?? []);
+      const items = await fetchTFSByDateRange(months);
+      setTfsItems(items);
       setLastUpdated(new Date());
     } catch (e) {
-      setTfsError(e instanceof Error ? e.message : "Failed to call /api/tfs");
-      setErrorCode("other");
+      const err = e as Error & { code?: string };
+      const msg = err.message ?? "Unknown error";
+      const code = err.code;
+
+      if (code === "NO_PAT") {
+        setErrorCode("NO_PAT");
+        setTfsError("NO_PAT");
+      } else if (code === "INVALID_PAT" || msg.includes("INVALID_PAT")) {
+        setErrorCode("INVALID_PAT");
+        setTfsError("INVALID_PAT");
+      } else if (
+        msg.includes("Failed to fetch") ||
+        msg.includes("NetworkError")    ||
+        msg.includes("Load failed")     ||
+        msg.includes("fetch failed")    ||
+        msg.includes("CORS")
+      ) {
+        setErrorCode("NETWORK");
+        setTfsError("NETWORK");
+      } else {
+        setErrorCode("OTHER");
+        setTfsError(msg);
+      }
     } finally {
       setTfsLoading(false);
     }
   }, []);
 
   // Auto-fetch on mount
-  useEffect(() => {
-    fetchTFS(dateRange);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useEffect(() => { fetchTFS(dateRange); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleDateRangeChange = (months: DateRangeMonths) => {
     setDateRange(months);
@@ -241,6 +405,7 @@ export default function TFSRecordsPage() {
 
   const hasFilters = search || selectedType !== "All" || selectedStatus !== "All" || selectedBuild !== "All" || cipLinkedOnly;
   const loading = cipLoading || tfsLoading;
+  const hasPAT = !!TFS_ENV_PAT;
 
   // ── Export CSV ────────────────────────────────────────────────────────────
   const handleExportCSV = () => {
@@ -275,22 +440,19 @@ export default function TFSRecordsPage() {
             <span className="text-xs text-gray-500 shrink-0">Show:</span>
             <div className="flex rounded-lg border border-gray-700 overflow-hidden">
               {DATE_RANGE_OPTIONS.map((opt) => (
-                <button
-                  key={opt.months}
+                <button key={opt.months}
                   onClick={() => !loading && handleDateRangeChange(opt.months)}
                   disabled={loading}
                   className={`px-3 py-1.5 text-xs font-medium transition-colors border-r border-gray-700 last:border-r-0 disabled:cursor-not-allowed ${
                     dateRange === opt.months
                       ? "bg-indigo-600 text-white"
                       : "bg-gray-900 text-gray-400 hover:bg-gray-800 hover:text-white"
-                  }`}
-                >
+                  }`}>
                   {opt.label}
                 </button>
               ))}
             </div>
           </div>
-
           {lastUpdated && (
             <span className={`text-xs transition-colors ${justRefreshed ? "text-green-400 font-medium" : "text-gray-500"}`}>
               {justRefreshed ? "Updated!" : `Synced at ${formatTime(lastUpdated)}`}
@@ -344,67 +506,69 @@ export default function TFSRecordsPage() {
         )}
       </div>
 
-      {/* Error banner */}
-      {tfsError && (
-        <div className={`mb-5 px-4 py-4 rounded-xl border ${
-          errorCode === "network" ? "bg-amber-900/15 border-amber-700/40" : "bg-red-900/20 border-red-700/40"
-        }`}>
+      {/* Error banners */}
+      {errorCode === "NETWORK" && (
+        <div className="mb-5 px-4 py-4 rounded-xl bg-yellow-900/20 border border-yellow-700/40">
           <div className="flex items-start gap-3">
-            <svg className={`w-5 h-5 shrink-0 mt-0.5 ${errorCode === "network" ? "text-amber-400" : "text-red-400"}`}
-              fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-            </svg>
+            <span className="text-xl shrink-0">🌐</span>
             <div className="flex-1">
-              {errorCode === "auth" ? (
-                <>
-                  <p className="text-sm font-semibold text-red-300">Authentication failed</p>
-                  <p className="text-xs text-red-400 mt-1">
-                    The <code className="bg-red-900/30 px-1 rounded">AZURE_DEVOPS_PAT</code> in Vercel environment variables is expired or invalid.
-                    Generate a new PAT in Azure DevOps → User Settings → Security → Personal Access Tokens, then update it in Vercel.
-                  </p>
-                </>
-              ) : errorCode === "config" ? (
-                <>
-                  <p className="text-sm font-semibold text-red-300">TFS environment variables missing</p>
-                  <p className="text-xs text-red-400 mt-1">
-                    Add <code className="bg-red-900/30 px-1 rounded font-mono">AZURE_DEVOPS_PAT</code>,{" "}
-                    <code className="bg-red-900/30 px-1 rounded font-mono">AZURE_DEVOPS_URL</code>,{" "}
-                    <code className="bg-red-900/30 px-1 rounded font-mono">AZURE_DEVOPS_COLLECTION</code>,{" "}
-                    <code className="bg-red-900/30 px-1 rounded font-mono">AZURE_DEVOPS_PROJECT</code> to Vercel environment variables and redeploy.
-                  </p>
-                </>
-              ) : errorCode === "network" ? (
-                <>
-                  <p className="text-sm font-semibold text-amber-300">Cannot reach TFS server</p>
-                  {networkReason && (
-                    <p className="text-xs text-amber-400 mt-1 font-medium">{networkReason}</p>
-                  )}
-                  <p className="text-xs text-amber-600/80 mt-1 font-mono break-all">{tfsError}</p>
-                  {diagnostics && (
-                    <div className="mt-3 bg-gray-900/60 border border-amber-800/30 rounded-lg px-3 py-3 space-y-1.5">
-                      <p className="text-xs font-semibold text-amber-400/80 uppercase tracking-wider mb-2">Connection diagnostics</p>
-                      {[
-                        ["TFS URL",     diagnostics.url],
-                        ["Collection",  diagnostics.collection],
-                        ["Project",     diagnostics.project],
-                        ["API Version", diagnostics.apiVersion],
-                        ["PAT",         diagnostics.pat],
-                        ["WIQL endpoint tried", diagnostics.endpoint],
-                      ].map(([label, value]) => (
-                        <div key={label} className="flex gap-2 text-xs">
-                          <span className="text-gray-500 shrink-0 w-36">{label}:</span>
-                          <span className={`font-mono break-all ${value?.includes("not set") ? "text-red-400" : "text-gray-300"}`}>{value}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </>
-              ) : (
-                <>
-                  <p className="text-sm font-semibold text-red-300">TFS error</p>
-                  <p className="text-xs text-red-400 mt-1 font-mono break-all">{tfsError}</p>
-                </>
-              )}
+              <p className="text-sm font-semibold text-yellow-300">VPN Required — Cannot Reach TFS</p>
+              <p className="text-xs text-yellow-500/90 mt-1">
+                Your browser cannot reach the TFS server. Please make sure you are connected to the
+                company VPN and try again.
+              </p>
+              <p className="text-xs text-gray-600 mt-1 font-mono">
+                {TFS_URL}/{TFS_COLLECTION}/{TFS_PROJECT}/_apis/wit/wiql
+              </p>
+              <button onClick={handleRefresh} disabled={loading}
+                className="mt-2 text-xs text-yellow-300 hover:text-yellow-200 underline underline-offset-2 disabled:opacity-50">
+                Retry after connecting to VPN
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {errorCode === "NO_PAT" && (
+        <div className="mb-5 px-4 py-4 rounded-xl bg-red-900/20 border border-red-700/40">
+          <div className="flex items-start gap-3">
+            <span className="text-xl shrink-0">🔐</span>
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-red-300">TFS Token Not Configured</p>
+              <p className="text-xs text-red-400 mt-1">
+                No PAT found. Add <code className="bg-red-900/30 px-1 rounded">NEXT_PUBLIC_TFS_PAT</code> to
+                Vercel environment variables and redeploy, or use the override below.
+              </p>
+              <PATOverridePanel onSaved={() => fetchTFS(dateRange)} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {errorCode === "INVALID_PAT" && (
+        <div className="mb-5 px-4 py-4 rounded-xl bg-red-900/20 border border-red-700/40">
+          <div className="flex items-start gap-3">
+            <span className="text-xl shrink-0">❌</span>
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-red-300">TFS Authentication Failed</p>
+              <p className="text-xs text-red-400 mt-1">
+                The PAT is invalid or expired. Update <code className="bg-red-900/30 px-1 rounded">NEXT_PUBLIC_TFS_PAT</code> in
+                Vercel environment variables, or enter a new PAT below.
+              </p>
+              {!hasPAT && <p className="text-xs text-gray-500 mt-1">PAT source: environment variable not set — using override.</p>}
+              <PATOverridePanel onSaved={() => fetchTFS(dateRange)} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {errorCode === "OTHER" && (
+        <div className="mb-5 px-4 py-4 rounded-xl bg-red-900/20 border border-red-700/40">
+          <div className="flex items-start gap-3">
+            <span className="text-xl shrink-0">⚠️</span>
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-red-300">TFS Error</p>
+              <p className="text-xs text-red-400 mt-1 font-mono break-all">{tfsError}</p>
               <button onClick={handleRefresh} disabled={loading}
                 className="mt-2 text-xs text-gray-300 hover:text-white underline underline-offset-2 disabled:opacity-50">
                 Retry
@@ -467,12 +631,9 @@ export default function TFSRecordsPage() {
       <div className="bg-[#111827] border border-gray-800 rounded-2xl overflow-hidden">
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-800">
           <p className="text-sm font-medium text-white">
-            {loading
-              ? "Loading…"
-              : `${filtered.length} work item${filtered.length !== 1 ? "s" : ""}${hasFilters ? " (filtered)" : ""}`}
+            {loading ? "Loading…" : `${filtered.length} work item${filtered.length !== 1 ? "s" : ""}${hasFilters ? " (filtered)" : ""}`}
           </p>
         </div>
-
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -501,8 +662,7 @@ export default function TFSRecordsPage() {
                 filtered.map((item) => {
                   const linkedCips = cipMap[item.id] ?? [];
                   return (
-                    <tr key={item.id}
-                      onClick={() => setPanelItem(item)}
+                    <tr key={item.id} onClick={() => setPanelItem(item)}
                       className="border-b border-gray-800/60 hover:bg-gray-800/30 cursor-pointer transition-colors">
                       <td className="px-4 py-3.5">
                         <a href={item.tfsUrl} target="_blank" rel="noreferrer"
@@ -513,13 +673,10 @@ export default function TFSRecordsPage() {
                       </td>
                       <td className="px-4 py-3.5">
                         <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${
-                          item.type.toLowerCase() === "bug"
-                            ? "bg-red-900/30 text-red-300 border-red-700/50"
-                            : item.type.toLowerCase() === "user story"
-                            ? "bg-blue-900/30 text-blue-300 border-blue-700/50"
-                            : item.type.toLowerCase() === "task"
-                            ? "bg-purple-900/30 text-purple-300 border-purple-700/50"
-                            : "bg-gray-800/60 text-gray-400 border-gray-600/50"
+                          item.type.toLowerCase() === "bug"        ? "bg-red-900/30 text-red-300 border-red-700/50"
+                          : item.type.toLowerCase() === "user story" ? "bg-blue-900/30 text-blue-300 border-blue-700/50"
+                          : item.type.toLowerCase() === "task"       ? "bg-purple-900/30 text-purple-300 border-purple-700/50"
+                          : "bg-gray-800/60 text-gray-400 border-gray-600/50"
                         }`}>{item.type}</span>
                       </td>
                       <td className="px-4 py-3.5 max-w-xs">
@@ -540,9 +697,7 @@ export default function TFSRecordsPage() {
                           <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-indigo-600/20 border border-indigo-500/30 text-xs font-bold text-indigo-300">
                             {linkedCips.length}
                           </span>
-                        ) : (
-                          <span className="text-gray-700">—</span>
-                        )}
+                        ) : <span className="text-gray-700">—</span>}
                       </td>
                       <td className="px-4 py-3.5 text-gray-500 text-xs whitespace-nowrap">{timeAgo(item.changedDate)}</td>
                     </tr>
@@ -562,13 +717,10 @@ export default function TFSRecordsPage() {
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 sticky top-0 bg-[#0f1623]">
               <div className="flex items-center gap-3">
                 <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${
-                  panelItem.type.toLowerCase() === "bug"
-                    ? "bg-red-900/30 text-red-300 border-red-700/50"
-                    : panelItem.type.toLowerCase() === "user story"
-                    ? "bg-blue-900/30 text-blue-300 border-blue-700/50"
-                    : panelItem.type.toLowerCase() === "task"
-                    ? "bg-purple-900/30 text-purple-300 border-purple-700/50"
-                    : "bg-gray-800/60 text-gray-400 border-gray-600/50"
+                  panelItem.type.toLowerCase() === "bug"        ? "bg-red-900/30 text-red-300 border-red-700/50"
+                  : panelItem.type.toLowerCase() === "user story" ? "bg-blue-900/30 text-blue-300 border-blue-700/50"
+                  : panelItem.type.toLowerCase() === "task"       ? "bg-purple-900/30 text-purple-300 border-purple-700/50"
+                  : "bg-gray-800/60 text-gray-400 border-gray-600/50"
                 }`}>{panelItem.type}</span>
                 <span className="font-mono text-indigo-400 font-medium">#{panelItem.id}</span>
               </div>
@@ -578,24 +730,20 @@ export default function TFSRecordsPage() {
                 </svg>
               </button>
             </div>
-
             <div className="px-6 py-5 space-y-5">
               <div>
                 <h3 className="text-base font-semibold text-white leading-snug">{panelItem.title}</h3>
                 <a href={panelItem.tfsUrl} target="_blank" rel="noreferrer"
-                  className="text-xs text-indigo-400 hover:underline mt-1 inline-block">
-                  Open in TFS ↗
-                </a>
+                  className="text-xs text-indigo-400 hover:underline mt-1 inline-block">Open in TFS ↗</a>
               </div>
-
               <div className="grid grid-cols-2 gap-4">
                 {([
-                  ["Status", <span key="s" className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${statusBadgeClass(panelItem.status)}`}>{panelItem.status}</span>],
+                  ["Status",     <span key="s" className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full border ${statusBadgeClass(panelItem.status)}`}>{panelItem.status}</span>],
                   ["Assigned To", panelItem.assignedTo],
                   ["Found In",   panelItem.foundInBuild || "—"],
                   ["Fixed In",   panelItem.fixedInBuild || "—"],
                   ["Created",    panelItem.createdDate ? new Date(panelItem.createdDate).toLocaleDateString() : "—"],
-                  ["Updated",    panelItem.changedDate  ? new Date(panelItem.changedDate).toLocaleDateString()  : "—"],
+                  ["Updated",    panelItem.changedDate  ? new Date(panelItem.changedDate).toLocaleDateString() : "—"],
                 ] as [string, React.ReactNode][]).map(([label, value]) => (
                   <div key={label}>
                     <p className="text-xs text-gray-500 mb-0.5">{label}</p>
@@ -603,15 +751,8 @@ export default function TFSRecordsPage() {
                   </div>
                 ))}
               </div>
-
-              <div>
-                <p className="text-xs text-gray-500 mb-0.5">Area Path</p>
-                <p className="text-sm text-gray-300 font-mono break-all">{panelItem.areaPath}</p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-500 mb-0.5">Iteration</p>
-                <p className="text-sm text-gray-300 font-mono break-all">{panelItem.iteration}</p>
-              </div>
+              <div><p className="text-xs text-gray-500 mb-0.5">Area Path</p><p className="text-sm text-gray-300 font-mono break-all">{panelItem.areaPath}</p></div>
+              <div><p className="text-xs text-gray-500 mb-0.5">Iteration</p><p className="text-sm text-gray-300 font-mono break-all">{panelItem.iteration}</p></div>
               {panelItem.tags && (
                 <div>
                   <p className="text-xs text-gray-500 mb-1.5">Tags</p>
@@ -622,7 +763,6 @@ export default function TFSRecordsPage() {
                   </div>
                 </div>
               )}
-
               {cipMap[panelItem.id]?.length > 0 && (
                 <div>
                   <p className="text-xs text-gray-500 mb-2">Linked CIP Records ({cipMap[panelItem.id].length})</p>
@@ -637,9 +777,7 @@ export default function TFSRecordsPage() {
                               : (cip.cipStatus ?? "").toLowerCase() === "denied"
                               ? "bg-red-900/40 text-red-400 border-red-700/50"
                               : "bg-gray-800 text-gray-400 border-gray-700"
-                          }`}>
-                            {cip.cipStatus ?? "—"}
-                          </span>
+                          }`}>{cip.cipStatus ?? "—"}</span>
                         </div>
                         <p className="text-xs text-gray-500 mt-0.5 truncate">{cip.clientName ?? ""}</p>
                       </div>
