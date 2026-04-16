@@ -625,8 +625,8 @@ function VersionSummary({ tfsItems, cipMap }: { tfsItems: TFSWorkItem[]; cipMap:
                                       <table className="w-full text-xs">
                                         <thead>
                                           <tr className="bg-gray-800 text-gray-400 uppercase tracking-wider">
+                                            <th className="px-3 py-2 text-left font-semibold">Incident #</th>
                                             <th className="px-3 py-2 text-left font-semibold">Client</th>
-                                            <th className="px-3 py-2 text-left font-semibold">Change Name</th>
                                             <th className="px-3 py-2 text-left font-semibold">Status</th>
                                             <th className="px-3 py-2 text-left font-semibold">Date</th>
                                             <th className="px-3 py-2 text-left font-semibold">⚡</th>
@@ -635,14 +635,14 @@ function VersionSummary({ tfsItems, cipMap }: { tfsItems: TFSWorkItem[]; cipMap:
                                         <tbody>
                                           {tfs.linkedCips.map((cip, idx) => (
                                             <tr key={cip.id} className={idx % 2 === 0 ? "bg-[#0d1220]" : "bg-gray-900/20"}>
-                                              <td className="px-3 py-2 text-gray-200 max-w-[160px] truncate" title={cip.clientName}>{cip.clientName || "—"}</td>
-                                              <td className="px-3 py-2 text-gray-400 max-w-[220px] truncate" title={cip.cipType}>{cip.cipType || "—"}</td>
+                                              <td className="px-3 py-2 font-mono text-indigo-400 whitespace-nowrap">{cip.id}</td>
+                                              <td className="px-3 py-2 text-gray-200 max-w-[200px] truncate" title={cip.clientName}>{cip.clientName || "—"}</td>
                                               <td className="px-3 py-2">
                                                 <span className={`px-1.5 py-0.5 rounded border text-xs ${statusBadgeClass(cip.cipStatus ?? "")}`}>
                                                   {cip.cipStatus || "—"}
                                                 </span>
                                               </td>
-                                              <td className="px-3 py-2 text-gray-500">
+                                              <td className="px-3 py-2 text-gray-500 whitespace-nowrap">
                                                 {cip.submissionDate
                                                   ? new Date(cip.submissionDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" })
                                                   : "—"}
