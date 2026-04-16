@@ -178,16 +178,19 @@ function collectFlatQueries(node: TFSQueryNode): TFSQueryNode[] {
 }
 
 async function fetchViaSharedQuery(months: DateRangeMonths, auth: string): Promise<TFSWorkItem[]> {
-  // Step 1 — list shared queries (project-level, CORS works)
+  // Step 1 — list all queries (root level, returns My Queries + Shared Queries tree)
   const qUrl =
-    `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/queries/Shared%20Queries` +
-    `?$depth=3&$expand=minimal&api-version=${TFS_API_VER}`;
+    `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/queries` +
+    `?$depth=2&$expand=minimal&api-version=${TFS_API_VER}`;
   const qRes = await fetch(qUrl, { method: "GET", headers: { Authorization: auth, Accept: "application/json" } });
   if (qRes.status === 401 || qRes.status === 403) throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
   if (!qRes.ok) throw new Error(`Queries list HTTP ${qRes.status}`);
 
-  const qData = await qRes.json() as TFSQueryNode;
-  const flatQueries = collectFlatQueries(qData);
+  const qData = await qRes.json() as { value?: TFSQueryNode[] };
+  // Root returns { value: [ {name:"My Queries",...}, {name:"Shared Queries",...} ] }
+  const allNodes: TFSQueryNode[] = [];
+  for (const root of qData.value ?? []) allNodes.push(...collectFlatQueries(root));
+  const flatQueries = allNodes;
   if (flatQueries.length === 0) throw new Error("No flat-list shared queries found in TFS");
 
   // Step 2 — run each flat query via GET until one returns items
