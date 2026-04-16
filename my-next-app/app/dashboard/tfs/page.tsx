@@ -401,64 +401,274 @@ function PATOverridePanel({ onSaved }: { onSaved: () => void }) {
   );
 }
 
-// ─── Version Summary ──────────────────────────────────────────────────────────
+// ─── Version Summary (detailed) ───────────────────────────────────────────────
+
+interface BuildGroup {
+  buildName:      string;
+  tfsItems:       (TFSWorkItem & { linkedCips: CIPRecord[] })[];
+  totalTFSItems:  number;
+  totalIncidents: number;
+}
+
+function buildVersionGroups(tfsItems: TFSWorkItem[], cipMap: Record<number, CIPRecord[]>): BuildGroup[] {
+  const byBuild: Record<string, BuildGroup> = {};
+  for (const item of tfsItems) {
+    const build = item.fixedInBuild?.trim() || "Not Assigned";
+    if (!byBuild[build]) byBuild[build] = { buildName: build, tfsItems: [], totalTFSItems: 0, totalIncidents: 0 };
+    const linkedCips = cipMap[item.id] ?? [];
+    byBuild[build].tfsItems.push({ ...item, linkedCips });
+    byBuild[build].totalTFSItems++;
+    byBuild[build].totalIncidents += linkedCips.length;
+  }
+  return Object.values(byBuild).sort((a, b) => {
+    if (a.buildName === "Not Assigned") return 1;
+    if (b.buildName === "Not Assigned") return -1;
+    return b.buildName.localeCompare(a.buildName);
+  });
+}
+
+function exportVersionSummaryCSV(groups: BuildGroup[]) {
+  const header = ["Build Version","TFS ID","TFS Type","TFS Title","TFS Status","Found In Build","Fixed In Build","Assigned To","Area","Client Name","CIP Status","Submission Date","Emergency"];
+  const rows: string[][] = [header];
+  for (const g of groups) {
+    for (const tfs of g.tfsItems) {
+      if (tfs.linkedCips.length === 0) {
+        rows.push([g.buildName, String(tfs.id), tfs.type, tfs.title, tfs.status, tfs.foundInBuild, tfs.fixedInBuild, tfs.assignedTo, tfs.areaPath, "—","—","—","—"]);
+      } else {
+        for (const cip of tfs.linkedCips) {
+          rows.push([g.buildName, String(tfs.id), tfs.type, tfs.title, tfs.status, tfs.foundInBuild, tfs.fixedInBuild, tfs.assignedTo, tfs.areaPath,
+            cip.clientName, cip.cipStatus,
+            cip.submissionDate ? new Date(cip.submissionDate).toLocaleDateString() : "",
+            cip.emergencyFlag ? "Yes" : "No",
+          ]);
+        }
+      }
+    }
+  }
+  const csv  = rows.map(r => r.map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a"); a.href = url;
+  a.download = `TFS_Version_Summary_${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+  URL.revokeObjectURL(url);
+}
 
 function VersionSummary({ tfsItems, cipMap }: { tfsItems: TFSWorkItem[]; cipMap: Record<number, CIPRecord[]> }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen]                     = useState(false);
+  const [expandedBuilds, setExpandedBuilds] = useState<Record<string, boolean>>({});
+  const [expandedTFS, setExpandedTFS]       = useState<Record<number, boolean>>({});
+  const [search, setSearch]                 = useState("");
+  const [buildFilter, setBuildFilter]       = useState("All");
 
-  const rows = useMemo(() => {
-    const buildData: Record<string, { tfsCount: number; cipSet: Set<string> }> = {};
-    for (const item of tfsItems) {
-      const build = item.fixedInBuild || "Not Assigned";
-      if (!buildData[build]) buildData[build] = { tfsCount: 0, cipSet: new Set() };
-      buildData[build].tfsCount++;
-      for (const cip of cipMap[item.id] ?? []) buildData[build].cipSet.add(cip.id);
+  const groups = useMemo(() => buildVersionGroups(tfsItems, cipMap), [tfsItems, cipMap]);
+
+  const filtered = useMemo(() => {
+    let g = groups;
+    if (buildFilter !== "All") g = g.filter(b => b.buildName === buildFilter);
+    if (search) {
+      const q = search.toLowerCase();
+      g = g.map(b => ({
+        ...b,
+        tfsItems: b.tfsItems.filter(t =>
+          String(t.id).includes(q) ||
+          t.title.toLowerCase().includes(q) ||
+          t.linkedCips.some(c =>
+            (c.clientName ?? "").toLowerCase().includes(q) ||
+            (c.chrTicketNumbers ?? "").toLowerCase().includes(q)
+          )
+        ),
+      })).filter(b => b.tfsItems.length > 0);
     }
-    return Object.entries(buildData)
-      .map(([build, d]) => ({ build, tfsCount: d.tfsCount, cipCount: d.cipSet.size }))
-      .sort((a, b) => {
-        if (a.build === "Not Assigned") return 1;
-        if (b.build === "Not Assigned") return -1;
-        return b.tfsCount - a.tfsCount;
-      });
-  }, [tfsItems, cipMap]);
+    return g;
+  }, [groups, buildFilter, search]);
 
-  if (rows.length === 0) return null;
+  const toggleBuild = (name: string) => setExpandedBuilds(p => ({ ...p, [name]: !p[name] }));
+  const toggleTFS   = (id: number)   => setExpandedTFS(p => ({ ...p, [id]: !p[id] }));
+  const expandAll   = () => { const s: Record<string, boolean> = {}; groups.forEach(g => s[g.buildName] = true); setExpandedBuilds(s); };
+  const collapseAll = () => setExpandedBuilds({});
+
+  if (groups.length === 0) return null;
 
   return (
-    <div className="mb-5">
+    <div className="mb-6">
+      {/* Section toggle */}
       <button onClick={() => setOpen(v => !v)}
-        className="flex items-center gap-2 text-sm font-semibold text-gray-300 hover:text-white mb-2 w-full text-left">
+        className="flex items-center gap-2 text-sm font-semibold text-gray-300 hover:text-white mb-3 w-full text-left">
         <svg className={`w-4 h-4 text-gray-500 transition-transform ${open ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
         </svg>
         Version Summary
-        <span className="text-xs font-normal text-gray-500">({rows.length} builds)</span>
+        <span className="text-xs font-normal text-gray-500">({groups.length} builds · {tfsItems.length} items)</span>
       </button>
+
       {open && (
-        <div className="bg-[#111827] border border-gray-800 rounded-xl overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-800 text-xs uppercase tracking-wider text-gray-500">
-                <th className="px-4 py-3 text-left font-semibold">Build / Version</th>
-                <th className="px-4 py-3 text-right font-semibold">TFS Items</th>
-                <th className="px-4 py-3 text-right font-semibold">CIP Incidents</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(r => (
-                <tr key={r.build} className="border-b border-gray-800/60 hover:bg-gray-800/20 transition-colors">
-                  <td className="px-4 py-2.5 font-mono text-xs text-gray-200">{r.build}</td>
-                  <td className="px-4 py-2.5 text-right text-gray-400 tabular-nums text-xs">{r.tfsCount}</td>
-                  <td className="px-4 py-2.5 text-right tabular-nums text-xs">
-                    {r.cipCount > 0
-                      ? <span className="text-indigo-400 font-medium">{r.cipCount}</span>
-                      : <span className="text-gray-600">—</span>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div>
+          {/* Toolbar */}
+          <div className="flex flex-wrap gap-2 mb-4 items-center">
+            <div className="relative flex-1 min-w-[180px] max-w-xs">
+              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 111 11a6 6 0 0116 0z" />
+              </svg>
+              <input type="text" placeholder="Search TFS # or client…" value={search} onChange={e => setSearch(e.target.value)}
+                className="w-full bg-[#1a1f2e] border border-gray-700 text-white text-xs rounded-lg pl-9 pr-3 py-2 focus:outline-none focus:border-indigo-500 placeholder:text-gray-600" />
+            </div>
+            <select value={buildFilter} onChange={e => setBuildFilter(e.target.value)}
+              className="bg-[#1a1f2e] border border-gray-700 text-white text-xs rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500 cursor-pointer">
+              <option value="All">All Builds</option>
+              {groups.map(g => <option key={g.buildName} value={g.buildName}>{g.buildName} ({g.totalTFSItems})</option>)}
+            </select>
+            <button onClick={expandAll}
+              className="text-xs text-indigo-400 border border-indigo-800 px-3 py-2 rounded-lg hover:border-indigo-500 transition-colors">
+              Expand All
+            </button>
+            <button onClick={collapseAll}
+              className="text-xs text-gray-400 border border-gray-700 px-3 py-2 rounded-lg hover:border-gray-500 transition-colors">
+              Collapse All
+            </button>
+            <button onClick={() => exportVersionSummaryCSV(groups)}
+              className="text-xs bg-emerald-700 hover:bg-emerald-600 text-white px-3 py-2 rounded-lg transition-colors ml-auto">
+              Export CSV
+            </button>
+          </div>
+
+          {/* Build groups */}
+          <div className="space-y-3">
+            {filtered.map(group => {
+              const isOpen = !!expandedBuilds[group.buildName];
+              const linkedCount = group.tfsItems.filter(t => t.linkedCips.length > 0).length;
+              const coveragePct = group.totalTFSItems > 0 ? (linkedCount / group.totalTFSItems) * 100 : 0;
+
+              return (
+                <div key={group.buildName} className="border border-gray-700 rounded-xl overflow-hidden">
+                  {/* Build header */}
+                  <button onClick={() => toggleBuild(group.buildName)}
+                    className="w-full flex items-center justify-between px-5 py-3.5 bg-gray-800/60 hover:bg-gray-800 transition-colors text-left">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <svg className={`w-3.5 h-3.5 text-gray-500 transition-transform shrink-0 ${isOpen ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                      </svg>
+                      <span className={`text-sm font-bold px-3 py-0.5 rounded-full ${group.buildName === "Not Assigned" ? "bg-gray-700 text-gray-400" : "bg-indigo-900/60 text-indigo-300 border border-indigo-700/40"}`}>
+                        {group.buildName}
+                      </span>
+                      <span className="text-xs text-gray-400">{group.totalTFSItems} TFS items</span>
+                      {group.totalIncidents > 0 && (
+                        <span className="text-xs text-green-400">&middot; {group.totalIncidents} incidents</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <div className="w-20 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                        <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${coveragePct}%` }} />
+                      </div>
+                      <span className="text-xs text-gray-500">{linkedCount} linked</span>
+                    </div>
+                  </button>
+
+                  {/* TFS items */}
+                  {isOpen && (
+                    <div className="divide-y divide-gray-800/60">
+                      {group.tfsItems.map(tfs => {
+                        const tfsOpen = !!expandedTFS[tfs.id];
+                        return (
+                          <div key={tfs.id} className="bg-[#0f1623]">
+                            {/* TFS row header */}
+                            <button onClick={() => toggleTFS(tfs.id)}
+                              className="w-full flex items-center gap-3 px-5 py-3 hover:bg-gray-800/40 transition-colors text-left flex-wrap">
+                              <svg className={`w-3 h-3 text-gray-600 transition-transform shrink-0 ${tfsOpen ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                              </svg>
+                              <a href={tfs.tfsUrl} target="_blank" rel="noreferrer"
+                                onClick={e => e.stopPropagation()}
+                                className="text-indigo-400 hover:text-indigo-300 font-mono font-bold text-sm shrink-0 hover:underline">
+                                #{tfs.id}
+                              </a>
+                              <span className={`text-xs px-1.5 py-0.5 rounded border shrink-0 ${typeBadgeClass(tfs.type)}`}>{tfs.type}</span>
+                              <span className="text-gray-200 text-sm flex-1 truncate min-w-0" title={tfs.title}>{tfs.title}</span>
+                              <span className={`text-xs px-1.5 py-0.5 rounded border shrink-0 ${statusBadgeClass(tfs.status)}`}>{tfs.status}</span>
+                              {tfs.linkedCips.length > 0 && (
+                                <span className="text-xs bg-indigo-600/20 border border-indigo-500/30 text-indigo-300 px-2 py-0.5 rounded-full font-medium shrink-0">
+                                  {tfs.linkedCips.length} incidents
+                                </span>
+                              )}
+                            </button>
+
+                            {/* TFS expanded detail */}
+                            {tfsOpen && (
+                              <div className="px-6 pb-5 pt-2 bg-gray-900/30 border-t border-gray-800/60">
+                                {/* Build details */}
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
+                                  <div>
+                                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Assigned To</p>
+                                    <p className="text-sm text-gray-200">{tfs.assignedTo || "—"}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Found In Build</p>
+                                    <p className="text-sm font-mono text-red-400">{tfs.foundInBuild || <span className="italic text-gray-600 text-xs">Not specified</span>}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Fixed In Build</p>
+                                    <p className="text-sm font-mono font-bold text-green-400">{tfs.fixedInBuild || <span className="italic text-gray-600 text-xs font-normal">Not deployed</span>}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Area</p>
+                                    <p className="text-sm text-gray-300 truncate" title={tfs.areaPath}>{tfs.areaPath?.split("\\").pop() || "—"}</p>
+                                  </div>
+                                </div>
+
+                                {/* Linked incidents */}
+                                {tfs.linkedCips.length > 0 ? (
+                                  <div>
+                                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">
+                                      Linked CIP Incidents ({tfs.linkedCips.length})
+                                    </p>
+                                    <div className="rounded-lg overflow-hidden border border-gray-700/60">
+                                      <table className="w-full text-xs">
+                                        <thead>
+                                          <tr className="bg-gray-800 text-gray-400 uppercase tracking-wider">
+                                            <th className="px-3 py-2 text-left font-semibold">Client</th>
+                                            <th className="px-3 py-2 text-left font-semibold">Change Name</th>
+                                            <th className="px-3 py-2 text-left font-semibold">Status</th>
+                                            <th className="px-3 py-2 text-left font-semibold">Date</th>
+                                            <th className="px-3 py-2 text-left font-semibold">⚡</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {tfs.linkedCips.map((cip, idx) => (
+                                            <tr key={cip.id} className={idx % 2 === 0 ? "bg-[#0d1220]" : "bg-gray-900/20"}>
+                                              <td className="px-3 py-2 text-gray-200 max-w-[160px] truncate" title={cip.clientName}>{cip.clientName || "—"}</td>
+                                              <td className="px-3 py-2 text-gray-400 max-w-[220px] truncate" title={cip.cipType}>{cip.cipType || "—"}</td>
+                                              <td className="px-3 py-2">
+                                                <span className={`px-1.5 py-0.5 rounded border text-xs ${statusBadgeClass(cip.cipStatus ?? "")}`}>
+                                                  {cip.cipStatus || "—"}
+                                                </span>
+                                              </td>
+                                              <td className="px-3 py-2 text-gray-500">
+                                                {cip.submissionDate
+                                                  ? new Date(cip.submissionDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" })
+                                                  : "—"}
+                                              </td>
+                                              <td className="px-3 py-2">
+                                                {cip.emergencyFlag && <span className="text-red-400">⚡</span>}
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <p className="text-xs text-gray-600 italic">No CIP incidents linked to this TFS item.</p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
