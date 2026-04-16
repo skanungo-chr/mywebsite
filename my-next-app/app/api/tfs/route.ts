@@ -17,14 +17,14 @@ export async function POST(req: Request) {
   const cfgUrl        = (process.env.AZURE_DEVOPS_URL        ?? "").trim() || "(not set)";
   const cfgCollection = (process.env.AZURE_DEVOPS_COLLECTION ?? "").trim() || "(not set)";
   const cfgProject    = (process.env.AZURE_DEVOPS_PROJECT    ?? "").trim() || "(not set)";
-  const cfgApiVersion = (process.env.AZURE_DEVOPS_API_VERSION ?? "").trim() || "2.0 (default)";
+  const cfgApiVersion = (process.env.AZURE_DEVOPS_API_VERSION ?? "").trim() || "6.0 (default)";
   const cfgPat        = process.env.AZURE_DEVOPS_PAT
     ? `set (${process.env.AZURE_DEVOPS_PAT.length} chars)`
     : "(not set)";
 
-  const wiqlEndpoint = cfgUrl !== "(not set)" && cfgCollection !== "(not set)"
-    ? `${cfgUrl.replace(/\/$/, "")}/${cfgCollection}/_apis/wit/wiql?api-version=${cfgApiVersion}`
-    : "(cannot build — missing URL or collection)";
+  const wiqlEndpoint = cfgUrl !== "(not set)" && cfgCollection !== "(not set)" && cfgProject !== "(not set)"
+    ? `${cfgUrl.replace(/\/+$/, "")}/${cfgCollection}/${cfgProject}/_apis/wit/wiql?api-version=${cfgApiVersion}`
+    : "(cannot build — missing URL, collection, or project)";
 
   const diagnostics = {
     url:        cfgUrl,

@@ -44,7 +44,7 @@ function getConfig() {
   const baseUrl    = (process.env.AZURE_DEVOPS_URL        ?? "").trim().replace(/\/+$/, "");
   const collection = (process.env.AZURE_DEVOPS_COLLECTION ?? "").trim();
   const project    = (process.env.AZURE_DEVOPS_PROJECT    ?? "").trim();
-  const apiVersion = (process.env.AZURE_DEVOPS_API_VERSION ?? "2.0").trim();
+  const apiVersion = (process.env.AZURE_DEVOPS_API_VERSION ?? "6.0").trim();
 
   if (!pat || !baseUrl || !collection || !project) {
     throw new Error(
@@ -123,8 +123,9 @@ async function fetchItemsByIds(
 
   for (let i = 0; i < ids.length; i += 200) {
     const chunk = ids.slice(i, i + 200);
+    // Pattern: https://{instance}/{collection}/{team-project}/_apis/{area}/{resource}?api-version={version}
     const url =
-      `${baseUrl}/${collection}/_apis/wit/workitems` +
+      `${baseUrl}/${collection}/${project}/_apis/wit/workitems` +
       `?ids=${chunk.join(",")}` +
       `&fields=${TFS_FIELDS}` +
       `&api-version=${apiVersion}`;
@@ -181,7 +182,8 @@ export async function fetchTFSByDateRange(months: number): Promise<TFSWorkItem[]
     query: `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '${project}'${dateClause} ORDER BY [System.ChangedDate] DESC`,
   };
 
-  const wiqlUrl = `${baseUrl}/${collection}/_apis/wit/wiql?api-version=${apiVersion}`;
+  // Pattern: https://{instance}/{collection}/{team-project}/_apis/{area}/{resource}?api-version={version}
+  const wiqlUrl = `${baseUrl}/${collection}/${project}/_apis/wit/wiql?api-version=${apiVersion}`;
   const wiqlRes = await tfsPost(wiqlUrl, auth, wiql);
 
   if (!wiqlRes.ok) {
