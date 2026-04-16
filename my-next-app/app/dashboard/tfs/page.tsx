@@ -119,87 +119,110 @@ async function fetchTFSItemsByIds(ids: number[], auth: string): Promise<TFSWorkI
   return all;
 }
 
-// ─── Reporting API — fetches ALL items changed since fromDate ─────────────────
-// Tries collection-level first, then project-level. api-version 2.0 is required
-// for the Reporting API (not 6.0).
+// ─── Strategy 1: Reporting API ────────────────────────────────────────────────
+// Collection-level GET endpoint — requires CORS on /{collection}/_apis/ path.
+// Falls through if CORS blocks it.
 
-async function fetchViaReportingAPI(months: DateRangeMonths, auth: string): Promise<{ items: TFSWorkItem[], capped: boolean }> {
+async function fetchViaReportingAPI(months: DateRangeMonths, auth: string): Promise<TFSWorkItem[]> {
   const fromDate = months > 0
     ? (() => { const d = new Date(); d.setMonth(d.getMonth() - months); return d.toISOString().slice(0, 19) + "Z"; })()
     : "2020-01-01T00:00:00Z";
 
-  // Try two URL patterns: collection-level and project-level
   const baseUrls = [
     `${TFS_URL}/${TFS_COLLECTION}/_apis/wit/reporting/workitems`,
     `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/reporting/workitems`,
   ];
 
   let lastError = "";
-
   for (const baseUrl of baseUrls) {
-    const items: TFSWorkItem[] = [];
-    let token: string | null = null;
-    let isLast = false;
-    let succeeded = false;
-
     try {
+      const items: TFSWorkItem[] = [];
+      let token: string | null = null;
+      let isLast = false;
       do {
-        const params = new URLSearchParams({
-          startDateTime: fromDate,
-          project: TFS_PROJECT,
-          fields: TFS_FIELDS,
-          "api-version": "2.0",   // Reporting API requires 2.0, not 6.0
-        });
+        const params = new URLSearchParams({ startDateTime: fromDate, project: TFS_PROJECT, fields: TFS_FIELDS, "api-version": "2.0" });
         if (token) params.set("continuationToken", token);
-
-        const url = `${baseUrl}?${params}`;
-        const res = await fetch(url, { method: "GET", headers: { Authorization: auth, Accept: "application/json" } });
-
+        const res = await fetch(`${baseUrl}?${params}`, { method: "GET", headers: { Authorization: auth, Accept: "application/json" } });
         if (res.status === 401 || res.status === 403) throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
         if (res.status === 405) throw Object.assign(new Error("TFS_METHOD_NOT_ALLOWED"), { code: "METHOD_NOT_ALLOWED" });
-        if (!res.ok) {
-          const body = await res.text().catch(() => "");
-          throw new Error(`HTTP ${res.status}: ${body.slice(0, 150)}`);
-        }
-
-        const data = await res.json() as {
-          values?: Record<string, unknown>[];
-          nextLink?: string;
-          isLastBatch?: boolean;
-          continuationToken?: string;
-        };
-
-        for (const v of data.values ?? []) {
-          const item = mapWorkItem(v);
-          if (item) items.push(item);
-        }
-
-        succeeded = true;
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json() as { values?: Record<string, unknown>[]; isLastBatch?: boolean; continuationToken?: string; nextLink?: string };
+        for (const v of data.values ?? []) { const i = mapWorkItem(v); if (i) items.push(i); }
         isLast = data.isLastBatch ?? true;
         token = data.continuationToken ?? null;
-        if (!token && data.nextLink) {
-          const m = data.nextLink.match(/continuationToken=([^&]+)/i);
-          token = m ? decodeURIComponent(m[1]) : null;
-        }
-        if (items.length >= MAX_REPORTING_ITEMS) return { items, capped: true };
+        if (!token && data.nextLink) { const m = data.nextLink.match(/continuationToken=([^&]+)/i); token = m ? decodeURIComponent(m[1]) : null; }
+        if (items.length >= MAX_REPORTING_ITEMS) return items;
       } while (!isLast && token);
-
-      if (succeeded) return { items, capped: false };
+      return items;
     } catch (err) {
       const e = err as Error & { code?: string };
       if (e.code === "INVALID_PAT" || e.code === "METHOD_NOT_ALLOWED") throw err;
       lastError = e.message;
-      // try next URL pattern
     }
   }
+  throw new Error(`Reporting API: ${lastError}`);
+}
 
-  throw new Error(`REPORTING_UNAVAILABLE: ${lastError}`);
+// ─── Strategy 2: Saved WIQL query via GET ────────────────────────────────────
+// GET /{collection}/{project}/_apis/wit/queries/Shared Queries?$depth=3
+// → find flat-list queries → run via GET /_apis/wit/wiql/{id}
+// Same project-level path as workitems → CORS already allows it.
+
+interface TFSQueryNode { id: string; name: string; queryType?: string; isFolder?: boolean; hasChildren?: boolean; children?: TFSQueryNode[] }
+
+function collectFlatQueries(node: TFSQueryNode): TFSQueryNode[] {
+  const results: TFSQueryNode[] = [];
+  if (!node.isFolder && node.queryType === "flat") results.push(node);
+  for (const child of node.children ?? []) results.push(...collectFlatQueries(child));
+  return results;
+}
+
+async function fetchViaSharedQuery(months: DateRangeMonths, auth: string): Promise<TFSWorkItem[]> {
+  // Step 1 — list shared queries (project-level, CORS works)
+  const qUrl =
+    `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/queries/Shared%20Queries` +
+    `?$depth=3&$expand=minimal&api-version=${TFS_API_VER}`;
+  const qRes = await fetch(qUrl, { method: "GET", headers: { Authorization: auth, Accept: "application/json" } });
+  if (qRes.status === 401 || qRes.status === 403) throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
+  if (!qRes.ok) throw new Error(`Queries list HTTP ${qRes.status}`);
+
+  const qData = await qRes.json() as TFSQueryNode;
+  const flatQueries = collectFlatQueries(qData);
+  if (flatQueries.length === 0) throw new Error("No flat-list shared queries found in TFS");
+
+  // Step 2 — run each flat query via GET until one returns items
+  const cutoff = months > 0 ? (() => { const d = new Date(); d.setMonth(d.getMonth() - months); return d; })() : null;
+  let lastErr = "";
+
+  for (const query of flatQueries) {
+    try {
+      const wUrl =
+        `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/wiql/${query.id}` +
+        `?$top=${MAX_REPORTING_ITEMS}&api-version=${TFS_API_VER}`;
+      const wRes = await fetch(wUrl, { method: "GET", headers: { Authorization: auth, Accept: "application/json" } });
+      if (wRes.status === 401 || wRes.status === 403) throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
+      if (!wRes.ok) { lastErr = `wiql HTTP ${wRes.status}`; continue; }
+      const wData = await wRes.json() as { workItems?: { id: number }[] };
+      const ids = (wData.workItems ?? []).map(w => w.id);
+      if (ids.length === 0) continue;
+
+      const items = await fetchTFSItemsByIds(ids, auth);
+      // Client-side date filter
+      return cutoff ? items.filter(i => !i.changedDate || new Date(i.changedDate) >= cutoff) : items;
+    } catch (err) {
+      const e = err as Error & { code?: string };
+      if (e.code === "INVALID_PAT") throw err;
+      lastErr = e.message;
+    }
+  }
+  throw new Error(`Saved queries failed: ${lastErr}`);
 }
 
 // ─── Combined fetch strategy ──────────────────────────────────────────────────
-// 1. Try Reporting API (GET, date-range, all items, api-version=2.0)
-// 2. If unavailable, fall back to CIP-extracted IDs only
-// 3. Always also merge in CIP-linked IDs (may be outside the date range)
+// 1. Reporting API   (GET, date-range native)
+// 2. Shared WIQL query via GET  (project-level, CORS safe)
+// 3. CIP-linked IDs fallback (always works)
+// CIP-linked IDs are always merged into whichever strategy succeeds.
 
 async function fetchAllTFSData(months: DateRangeMonths, cipIds: number[]): Promise<{
   items: TFSWorkItem[];
@@ -211,37 +234,34 @@ async function fetchAllTFSData(months: DateRangeMonths, cipIds: number[]): Promi
   if (!pat) throw Object.assign(new Error("NO_PAT"), { code: "NO_PAT" });
   const auth = buildAuthHeader(pat);
 
-  let rangeItems: TFSWorkItem[] = [];
-  let usedFallback = false;
-  let fallbackReason = "";
-  let capped = false;
+  const strategies: Array<{ name: string; fn: () => Promise<TFSWorkItem[]> }> = [
+    { name: "Reporting API", fn: () => fetchViaReportingAPI(months, auth) },
+    { name: "Saved Query",   fn: () => fetchViaSharedQuery(months, auth) },
+  ];
 
-  try {
-    const r = await fetchViaReportingAPI(months, auth);
-    rangeItems = r.items;
-    capped = r.capped;
-  } catch (err) {
-    const e = err as Error & { code?: string };
-    if (e.code === "INVALID_PAT" || e.code === "METHOD_NOT_ALLOWED") throw err;
-    usedFallback = true;
-    fallbackReason = e.message;
+  const errors: string[] = [];
+
+  for (const strategy of strategies) {
+    try {
+      const rangeItems = await strategy.fn();
+      // Merge CIP-linked IDs that might be outside the date range
+      const byId = new Map(rangeItems.map(i => [i.id, i]));
+      const missing = cipIds.filter(id => !byId.has(id));
+      if (missing.length > 0) {
+        const extra = await fetchTFSItemsByIds(missing, auth);
+        for (const item of extra) byId.set(item.id, item);
+      }
+      return { items: [...byId.values()], usedFallback: false, fallbackReason: "", capped: rangeItems.length >= MAX_REPORTING_ITEMS };
+    } catch (err) {
+      const e = err as Error & { code?: string };
+      if (e.code === "INVALID_PAT" || e.code === "METHOD_NOT_ALLOWED") throw err;
+      errors.push(`${strategy.name}: ${e.message}`);
+    }
   }
 
-  // Always merge CIP-linked IDs so linked items always appear
-  const rangeById = new Map(rangeItems.map(i => [i.id, i]));
-  const missingCipIds = cipIds.filter(id => !rangeById.has(id));
-  if (missingCipIds.length > 0) {
-    const extra = await fetchTFSItemsByIds(missingCipIds, auth);
-    for (const item of extra) rangeById.set(item.id, item);
-  }
-
-  if (usedFallback) {
-    // Fallback: fetch only CIP-linked IDs
-    const fallbackItems = await fetchTFSItemsByIds(cipIds, auth);
-    return { items: fallbackItems, usedFallback, fallbackReason, capped: false };
-  }
-
-  return { items: [...rangeById.values()], usedFallback, fallbackReason, capped };
+  // All strategies failed — fall back to CIP-linked IDs only
+  const fallbackItems = await fetchTFSItemsByIds(cipIds, auth);
+  return { items: fallbackItems, usedFallback: true, fallbackReason: errors.join(" | "), capped: false };
 }
 
 // ─── CIP helpers ──────────────────────────────────────────────────────────────
