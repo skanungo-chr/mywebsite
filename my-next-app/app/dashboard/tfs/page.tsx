@@ -7,21 +7,23 @@ import { CIPRecord } from "@/lib/cip";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface TFSWorkItem {
-  id:              number;
-  title:           string;
-  status:          string;
-  type:            string;
-  assignedTo:      string;
-  foundInBuild:    string;
-  fixedInBuild:    string;
-  reportedVersion: string;
-  incidentId:      string;
-  createdDate:     string | null;
-  changedDate:     string | null;
-  areaPath:        string;
-  iteration:       string;
-  tags:            string;
-  tfsUrl:          string;
+  id:                number;
+  title:             string;
+  status:            string;
+  type:              string;
+  assignedTo:        string;
+  foundInBuild:      string;
+  fixedInBuild:      string;
+  reportedVersion:   string;
+  incidentId:        string;
+  clientFromTFS:     string;
+  includedInVersions: string;
+  createdDate:       string | null;
+  changedDate:       string | null;
+  areaPath:          string;
+  iteration:         string;
+  tags:              string;
+  tfsUrl:            string;
 }
 
 type ErrorCode = "NO_PAT" | "INVALID_PAT" | "NETWORK" | "CORS" | "METHOD_NOT_ALLOWED" | "OTHER" | null;
@@ -40,7 +42,13 @@ const TFS_FIELDS = [
   "System.AssignedTo", "System.CreatedDate", "System.ChangedDate",
   "Microsoft.VSTS.Build.FoundIn", "Microsoft.VSTS.Build.IntegrationBuild",
   "System.Tags", "System.AreaPath", "System.IterationPath",
-  "Custom.ReportedVersion", "Custom.IncidentID",
+  "Custom.ReportedVersion",
+  // Incident ID — try all known variants
+  "Custom.IncidentID", "Custom.IncidentId", "Custom.SupportIncidentId",
+  "Custom.IncidentNumber", "Microsoft.VSTS.Common.IncidentId",
+  // Client / version fields visible in TFS Support Information
+  "Custom.Client", "Custom.ClientName", "Custom.SupportClient",
+  "Custom.IncludedInVersions", "Custom.IncludedinVersions",
 ].join(",");
 
 
@@ -87,7 +95,9 @@ function mapWorkItem(raw: Record<string, unknown>): TFSWorkItem | null {
     foundInBuild:    String(f["Microsoft.VSTS.Build.FoundIn"]          ?? ""),
     fixedInBuild:    String(f["Microsoft.VSTS.Build.IntegrationBuild"] ?? ""),
     reportedVersion: String(f["Custom.ReportedVersion"]                ?? ""),
-    incidentId:      String(f["Custom.IncidentID"]                     ?? ""),
+    incidentId:      String(f["Custom.IncidentID"] || f["Custom.IncidentId"] || f["Custom.SupportIncidentId"] || f["Custom.IncidentNumber"] || f["Microsoft.VSTS.Common.IncidentId"] || ""),
+    clientFromTFS:   String(f["Custom.Client"] || f["Custom.ClientName"] || f["Custom.SupportClient"] || ""),
+    includedInVersions: String(f["Custom.IncludedInVersions"] || f["Custom.IncludedinVersions"] || ""),
     createdDate:  f["System.CreatedDate"] ? String(f["System.CreatedDate"]) : null,
     changedDate:  f["System.ChangedDate"] ? String(f["System.ChangedDate"]) : null,
     areaPath:     String(f["System.AreaPath"]      ?? ""),
@@ -277,10 +287,33 @@ function SkeletonRow() {
 // ─── PAT Override Panel ───────────────────────────────────────────────────────
 
 function PATOverridePanel({ onSaved }: { onSaved: () => void }) {
-  const [pat, setPat]     = useState("");
-  const [show, setShow]   = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [pat, setPat]           = useState("");
+  const [show, setShow]         = useState(false);
+  const [saved, setSaved]       = useState(false);
+  const [discovering, setDisc]  = useState(false);
+  const [discResult, setDiscResult] = useState<string | null>(null);
   const hasSaved = typeof window !== "undefined" && !!localStorage.getItem(PAT_OVERRIDE_KEY);
+
+  const handleDiscover = async () => {
+    setDisc(true); setDiscResult(null);
+    try {
+      const activePAT = (localStorage.getItem(PAT_OVERRIDE_KEY) ?? TFS_ENV_PAT).trim();
+      const auth = `Basic ${btoa(`:${activePAT}`)}`;
+      const url = `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/workitems?ids=82216&$expand=all&api-version=${TFS_API_VER}`;
+      const res = await fetch(url, { headers: { Authorization: auth, Accept: "application/json" } });
+      const data = await res.json() as { value?: { fields?: Record<string, unknown> }[] };
+      const fields = data.value?.[0]?.fields ?? {};
+      const interesting = Object.entries(fields)
+        .filter(([k, v]) => k.toLowerCase().includes("incident") || k.toLowerCase().includes("client") || k.toLowerCase().includes("version") || k.toLowerCase().includes("support") || String(v).includes("INC-"))
+        .map(([k, v]) => `${k} = "${v}"`)
+        .join("\n");
+      setDiscResult(interesting || "No incident/client/version fields found.\n\nAll fields:\n" + Object.keys(fields).sort().join("\n"));
+    } catch (e) {
+      setDiscResult(`Error: ${(e as Error).message}`);
+    } finally {
+      setDisc(false);
+    }
+  };
 
   const handleSave = () => {
     if (!pat.trim()) return;
@@ -321,6 +354,17 @@ function PATOverridePanel({ onSaved }: { onSaved: () => void }) {
           </button>
         )}
       </div>
+      <div className="mt-2">
+        <button onClick={handleDiscover} disabled={discovering}
+          className="text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-40 text-gray-300 border border-gray-600 px-3 py-1.5 rounded-lg transition-colors">
+          {discovering ? "Discovering…" : "🔍 Discover TFS Field Names (work item #82216)"}
+        </button>
+        {discResult && (
+          <pre className="mt-2 text-[10px] text-green-400 bg-gray-950 border border-gray-700 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap max-h-60">
+            {discResult}
+          </pre>
+        )}
+      </div>
     </details>
   );
 }
@@ -345,7 +389,8 @@ function buildVersionGroups(tfsItems: TFSWorkItem[], cipMap: Record<number, CIPR
     const linkedCips = (cipMap[item.id] ?? []).filter(c => !String(c.chrTicketNumbers ?? "").toUpperCase().startsWith("CHR-"));
     byBuild[build].tfsItems.push({ ...item, linkedCips });
     byBuild[build].totalTFSItems++;
-    byBuild[build].totalIncidents += linkedCips.length;
+    // Count Firestore-matched CIPs, or fall back to 1 if TFS incidentId is set
+    byBuild[build].totalIncidents += linkedCips.length > 0 ? linkedCips.length : (item.incidentId ? 1 : 0);
   }
   return Object.values(byBuild).sort((a, b) => {
     if (a.buildName === "Not Assigned") return 1;
@@ -604,10 +649,32 @@ function VersionSummary({ tfsItems, cipMap }: { tfsItems: TFSWorkItem[]; cipMap:
                                   )}
                                 </p>
                                 {/* Linked incidents */}
-                                {tfs.linkedCips.length > 0
-                                  ? <LinkedIncidentsBox cips={tfs.linkedCips} />
-                                  : <p className="text-xs text-gray-700 italic">No linked CIP incidents</p>
-                                }
+                                {tfs.linkedCips.length > 0 ? (
+                                  <LinkedIncidentsBox cips={tfs.linkedCips} />
+                                ) : tfs.incidentId ? (
+                                  <div className="mt-2 border border-indigo-800/50 rounded-lg overflow-hidden font-mono text-xs">
+                                    <div className="px-3 py-1.5 bg-indigo-900/30 text-indigo-400 text-[11px] tracking-wider border-b border-indigo-800/50">
+                                      Incident ID (from TFS field)
+                                    </div>
+                                    <div className="flex items-center flex-wrap gap-0 bg-[#0d1220]">
+                                      <span className="px-3 py-2 text-indigo-300 font-bold border-r border-gray-800/60 min-w-[160px]">
+                                        {tfs.incidentId}
+                                      </span>
+                                      {tfs.clientFromTFS && (
+                                        <span className="px-3 py-2 text-gray-200 font-sans border-r border-gray-800/60 flex-1 truncate" title={tfs.clientFromTFS}>
+                                          {tfs.clientFromTFS}
+                                        </span>
+                                      )}
+                                      {tfs.includedInVersions && (
+                                        <span className="px-3 py-2 text-green-400 font-mono text-[11px]" title={tfs.includedInVersions}>
+                                          {tfs.includedInVersions}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <p className="text-xs text-gray-700 italic">No linked CIP incidents</p>
+                                )}
                               </div>
                             )}
                           </div>
