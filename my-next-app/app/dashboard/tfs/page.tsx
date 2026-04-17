@@ -15,6 +15,7 @@ interface TFSWorkItem {
   foundInBuild:    string;
   fixedInBuild:    string;
   reportedVersion: string;
+  incidentId:      string;
   createdDate:     string | null;
   changedDate:     string | null;
   areaPath:        string;
@@ -39,7 +40,7 @@ const TFS_FIELDS = [
   "System.AssignedTo", "System.CreatedDate", "System.ChangedDate",
   "Microsoft.VSTS.Build.FoundIn", "Microsoft.VSTS.Build.IntegrationBuild",
   "System.Tags", "System.AreaPath", "System.IterationPath",
-  "Custom.ReportedVersion",
+  "Custom.ReportedVersion", "Custom.IncidentID",
 ].join(",");
 
 
@@ -86,6 +87,7 @@ function mapWorkItem(raw: Record<string, unknown>): TFSWorkItem | null {
     foundInBuild:    String(f["Microsoft.VSTS.Build.FoundIn"]          ?? ""),
     fixedInBuild:    String(f["Microsoft.VSTS.Build.IntegrationBuild"] ?? ""),
     reportedVersion: String(f["Custom.ReportedVersion"]                ?? ""),
+    incidentId:      String(f["Custom.IncidentID"]                     ?? ""),
     createdDate:  f["System.CreatedDate"] ? String(f["System.CreatedDate"]) : null,
     changedDate:  f["System.ChangedDate"] ? String(f["System.ChangedDate"]) : null,
     areaPath:     String(f["System.AreaPath"]      ?? ""),
@@ -839,7 +841,20 @@ export default function TFSRecordsPage() {
   }, [doFetch]);
 
   // ── Derived data ───────────────────────────────────────────────────────────
-  const cipMap  = useMemo(() => buildCipMap(cipRecords), [cipRecords]);
+  const cipMap = useMemo(() => {
+    const map = buildCipMap(cipRecords);
+    // Also match via TFS Custom.IncidentID → CIP record id (e.g. "INC-279374")
+    const cipById: Record<string, CIPRecord> = {};
+    for (const c of cipRecords) cipById[c.id] = c;
+    for (const item of tfsItems) {
+      if (!item.incidentId) continue;
+      const cip = cipById[item.incidentId];
+      if (!cip) continue;
+      if (!map[item.id]) map[item.id] = [];
+      if (!map[item.id].some(c => c.id === cip.id)) map[item.id].push(cip);
+    }
+    return map;
+  }, [cipRecords, tfsItems]);
   const tfsById = useMemo(() => {
     const m: Record<number, TFSWorkItem> = {};
     for (const item of tfsItems) m[item.id] = item;
