@@ -375,6 +375,58 @@ function exportVersionSummaryCSV(groups: BuildGroup[]) {
   URL.revokeObjectURL(url);
 }
 
+function typeIcon(t: string) {
+  const l = t.toLowerCase();
+  if (l === "bug") return "🐛";
+  if (l === "user story") return "📖";
+  if (l === "task") return "📋";
+  return "🔷";
+}
+
+function LinkedIncidentsBox({ cips }: { cips: CIPRecord[] }) {
+  const [showAll, setShowAll] = useState(false);
+  const PREVIEW = 5;
+  const visible = showAll ? cips : cips.slice(0, PREVIEW);
+  const rest = cips.length - PREVIEW;
+  return (
+    <div className="mt-2 border border-gray-700/70 rounded-lg overflow-hidden font-mono text-xs">
+      <div className="px-3 py-1.5 bg-gray-800/80 text-gray-400 text-[11px] tracking-wider border-b border-gray-700/70">
+        Linked Incidents ({cips.length})
+      </div>
+      {visible.map((cip, idx) => (
+        <div key={cip.id} className={`flex items-center gap-0 ${idx % 2 === 0 ? "bg-[#0d1220]" : "bg-gray-900/20"}`}>
+          <span className="px-3 py-1.5 text-indigo-400 min-w-[160px] truncate border-r border-gray-800/60" title={cip.chrTicketNumbers}>
+            {cip.chrTicketNumbers || "—"}
+          </span>
+          <span className="px-3 py-1.5 text-gray-200 flex-1 truncate border-r border-gray-800/60 font-sans" title={cip.clientName}>
+            {cip.clientName || "—"}
+          </span>
+          <span className={`px-3 py-1.5 font-sans min-w-[110px] text-center ${
+            (cip.cipStatus ?? "").toLowerCase() === "approved" ? "text-green-400" :
+            (cip.cipStatus ?? "").toLowerCase() === "pending" ? "text-yellow-400" :
+            "text-gray-400"
+          }`}>
+            {cip.cipStatus || "—"}
+            {cip.emergencyFlag && <span className="ml-1 text-red-400">⚡</span>}
+          </span>
+        </div>
+      ))}
+      {rest > 0 && !showAll && (
+        <button onClick={() => setShowAll(true)}
+          className="w-full px-3 py-1.5 text-gray-500 hover:text-gray-300 text-[11px] bg-gray-900/40 hover:bg-gray-800/40 transition-colors text-left">
+          … {rest} more
+        </button>
+      )}
+      {showAll && rest > 0 && (
+        <button onClick={() => setShowAll(false)}
+          className="w-full px-3 py-1.5 text-gray-500 hover:text-gray-300 text-[11px] bg-gray-900/40 hover:bg-gray-800/40 transition-colors text-left">
+          Show less
+        </button>
+      )}
+    </div>
+  );
+}
+
 function VersionSummary({ tfsItems, cipMap }: { tfsItems: TFSWorkItem[]; cipMap: Record<number, CIPRecord[]> }) {
   const [open, setOpen]                     = useState(true);
   const [expandedBuilds, setExpandedBuilds] = useState<Record<string, boolean>>({});
@@ -422,15 +474,22 @@ function VersionSummary({ tfsItems, cipMap }: { tfsItems: TFSWorkItem[]; cipMap:
 
   return (
     <div className="mb-6">
-      {/* Section toggle */}
-      <button onClick={() => setOpen(v => !v)}
-        className="flex items-center gap-2 text-sm font-semibold text-gray-300 hover:text-white mb-3 w-full text-left">
-        <svg className={`w-4 h-4 text-gray-500 transition-transform ${open ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-        </svg>
-        Version Summary
-        <span className="text-xs font-normal text-gray-500">({groups.length} builds · {tfsItems.length} items)</span>
-      </button>
+      {/* Section header */}
+      <div className="mb-4">
+        <button onClick={() => setOpen(v => !v)}
+          className="flex items-center gap-2 w-full text-left group">
+          <span className="text-xs text-gray-500 transition-colors group-hover:text-gray-300">
+            {open ? "▼" : "▶"}
+          </span>
+          <span className="text-sm font-bold tracking-widest text-gray-200 uppercase group-hover:text-white transition-colors">
+            Version Summary
+          </span>
+          <span className="text-xs text-gray-500 font-normal">
+            — {groups.length} builds · {tfsItems.length} TFS items
+          </span>
+        </button>
+        <div className="mt-2 border-t border-gray-700/60" />
+      </div>
 
       {open && (
         <div>
@@ -463,132 +522,88 @@ function VersionSummary({ tfsItems, cipMap }: { tfsItems: TFSWorkItem[]; cipMap:
           </div>
 
           {/* Build groups */}
-          <div className="space-y-3">
+          <div className="space-y-1">
             {filtered.map(group => {
               const isOpen = !!expandedBuilds[group.buildName];
-              const linkedCount = group.tfsItems.filter(t => t.linkedCips.length > 0).length;
-              const coveragePct = group.totalTFSItems > 0 ? (linkedCount / group.totalTFSItems) * 100 : 0;
+              const isNotAssigned = group.buildName === "Not Assigned";
+              const incidentDisplay = isNotAssigned ? "—" : `${group.totalIncidents} incidents`;
 
               return (
-                <div key={group.buildName} className="border border-gray-700 rounded-xl overflow-hidden">
-                  {/* Build header */}
+                <div key={group.buildName}>
+                  {/* Build row */}
                   <button onClick={() => toggleBuild(group.buildName)}
-                    className="w-full flex items-center justify-between px-5 py-3.5 bg-gray-800/60 hover:bg-gray-800 transition-colors text-left">
-                    <div className="flex items-center gap-3 flex-wrap">
-                      <svg className={`w-3.5 h-3.5 text-gray-500 transition-transform shrink-0 ${isOpen ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                      </svg>
-                      <span className={`text-sm font-bold px-3 py-0.5 rounded-full ${group.buildName === "Not Assigned" ? "bg-gray-700 text-gray-400" : "bg-indigo-900/60 text-indigo-300 border border-indigo-700/40"}`}>
-                        {group.buildName}
-                      </span>
-                      <span className="text-xs text-gray-400">{group.totalTFSItems} TFS items</span>
-                      {group.totalIncidents > 0 && (
-                        <span className="text-xs text-green-400">&middot; {group.totalIncidents} incidents</span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <div className="w-20 h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                        <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${coveragePct}%` }} />
-                      </div>
-                      <span className="text-xs text-gray-500">{linkedCount} linked</span>
-                    </div>
+                    className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg hover:bg-gray-800/50 transition-colors text-left group">
+                    <span className="text-gray-500 text-xs w-3 shrink-0">{isOpen ? "▼" : "▶"}</span>
+                    <span className="text-base leading-none">📦</span>
+                    <span className={`text-sm font-semibold ${isNotAssigned ? "text-gray-500" : "text-gray-100"}`}>
+                      {group.buildName}
+                    </span>
+                    <span className="text-xs text-gray-500 font-normal">
+                      ({group.totalTFSItems} TFS
+                      {isNotAssigned
+                        ? " · —)"
+                        : group.totalIncidents > 0
+                          ? ` · ${group.totalIncidents} incidents)`
+                          : ")"
+                      }
+                    </span>
                   </button>
 
-                  {/* TFS items */}
+                  {/* TFS items under this build */}
                   {isOpen && (
-                    <div className="divide-y divide-gray-800/60">
+                    <div className="ml-6 mt-0.5 mb-2 border-l border-gray-700/50 pl-4 space-y-0.5">
                       {group.tfsItems.map(tfs => {
                         const tfsOpen = !!expandedTFS[tfs.id];
                         return (
-                          <div key={tfs.id} className="bg-[#0f1623]">
-                            {/* TFS row header */}
+                          <div key={tfs.id}>
+                            {/* TFS item row */}
                             <button onClick={() => toggleTFS(tfs.id)}
-                              className="w-full flex items-center gap-3 px-5 py-3 hover:bg-gray-800/40 transition-colors text-left flex-wrap">
-                              <svg className={`w-3 h-3 text-gray-600 transition-transform shrink-0 ${tfsOpen ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                              </svg>
+                              className="w-full flex items-center gap-1.5 px-2 py-2 rounded-lg hover:bg-gray-800/40 transition-colors text-left group">
+                              <span className="text-gray-600 text-[10px] w-3 shrink-0">{tfsOpen ? "▼" : "▶"}</span>
                               <a href={tfs.tfsUrl} target="_blank" rel="noreferrer"
                                 onClick={e => e.stopPropagation()}
                                 className="text-indigo-400 hover:text-indigo-300 font-mono font-bold text-sm shrink-0 hover:underline">
                                 #{tfs.id}
                               </a>
-                              <span className={`text-xs px-1.5 py-0.5 rounded border shrink-0 ${typeBadgeClass(tfs.type)}`}>{tfs.type}</span>
+                              <span className="text-sm shrink-0">{typeIcon(tfs.type)}</span>
+                              <span className="text-gray-400 text-xs shrink-0">{tfs.type}</span>
+                              <span className="text-gray-500 text-xs shrink-0">│</span>
                               <span className="text-gray-200 text-sm flex-1 truncate min-w-0" title={tfs.title}>{tfs.title}</span>
-                              <span className={`text-xs px-1.5 py-0.5 rounded border shrink-0 ${statusBadgeClass(tfs.status)}`}>{tfs.status}</span>
+                              <span className="text-gray-500 text-xs shrink-0">│</span>
+                              <span className={`text-xs shrink-0 ${
+                                tfs.status.toLowerCase() === "closed" || tfs.status.toLowerCase() === "resolved" ? "text-green-400" :
+                                tfs.status.toLowerCase() === "active" ? "text-yellow-400" :
+                                tfs.status.toLowerCase() === "new" ? "text-gray-400" :
+                                "text-blue-400"
+                              }`}>{tfs.status}</span>
                               {tfs.linkedCips.length > 0 && (
-                                <span className="text-xs bg-indigo-600/20 border border-indigo-500/30 text-indigo-300 px-2 py-0.5 rounded-full font-medium shrink-0">
-                                  {tfs.linkedCips.length} incidents
-                                </span>
+                                <span className="ml-1 text-xs text-indigo-400 shrink-0">({tfs.linkedCips.length})</span>
                               )}
                             </button>
 
                             {/* TFS expanded detail */}
                             {tfsOpen && (
-                              <div className="px-6 pb-5 pt-2 bg-gray-900/30 border-t border-gray-800/60">
-                                {/* Build details */}
-                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
-                                  <div>
-                                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Assigned To</p>
-                                    <p className="text-sm text-gray-200">{tfs.assignedTo || "—"}</p>
-                                  </div>
-                                  <div>
-                                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Found In Build</p>
-                                    <p className="text-sm font-mono text-red-400">{tfs.foundInBuild || <span className="italic text-gray-600 text-xs">Not specified</span>}</p>
-                                  </div>
-                                  <div>
-                                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Fixed In Build</p>
-                                    <p className="text-sm font-mono font-bold text-green-400">{tfs.fixedInBuild || <span className="italic text-gray-600 text-xs font-normal">Not deployed</span>}</p>
-                                  </div>
-                                  <div>
-                                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Area</p>
-                                    <p className="text-sm text-gray-300 truncate" title={tfs.areaPath}>{tfs.areaPath?.split("\\").pop() || "—"}</p>
-                                  </div>
-                                </div>
-
+                              <div className="ml-5 px-3 pb-3 pt-1">
+                                {/* Found In / Fixed In line */}
+                                <p className="text-xs text-gray-500 mb-2">
+                                  <span className="text-gray-400">Found In:</span>{" "}
+                                  <span className="text-red-400 font-mono">{tfs.foundInBuild || "—"}</span>
+                                  <span className="mx-3 text-gray-700">│</span>
+                                  <span className="text-gray-400">Fixed In:</span>{" "}
+                                  <span className="text-green-400 font-mono font-semibold">{tfs.fixedInBuild || "—"}</span>
+                                  {tfs.assignedTo && tfs.assignedTo !== "Unassigned" && (
+                                    <>
+                                      <span className="mx-3 text-gray-700">│</span>
+                                      <span className="text-gray-400">Assigned:</span>{" "}
+                                      <span className="text-gray-300">{tfs.assignedTo}</span>
+                                    </>
+                                  )}
+                                </p>
                                 {/* Linked incidents */}
-                                {tfs.linkedCips.length > 0 ? (
-                                  <div>
-                                    <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">
-                                      Linked CIP Incidents ({tfs.linkedCips.length})
-                                    </p>
-                                    <div className="rounded-lg overflow-hidden border border-gray-700/60">
-                                      <table className="w-full text-xs">
-                                        <thead>
-                                          <tr className="bg-gray-800 text-gray-400 uppercase tracking-wider">
-                                            <th className="px-3 py-2 text-left font-semibold">Incident #</th>
-                                            <th className="px-3 py-2 text-left font-semibold">Client</th>
-                                            <th className="px-3 py-2 text-left font-semibold">Status</th>
-                                            <th className="px-3 py-2 text-left font-semibold">Date</th>
-                                            <th className="px-3 py-2 text-left font-semibold">⚡</th>
-                                          </tr>
-                                        </thead>
-                                        <tbody>
-                                          {tfs.linkedCips.map((cip, idx) => (
-                                            <tr key={cip.id} className={idx % 2 === 0 ? "bg-[#0d1220]" : "bg-gray-900/20"}>
-                                              <td className="px-3 py-2 font-mono text-indigo-400 whitespace-nowrap max-w-[160px] truncate" title={cip.chrTicketNumbers}>{cip.chrTicketNumbers || "—"}</td>
-                                              <td className="px-3 py-2 text-gray-200 max-w-[200px] truncate" title={cip.clientName}>{cip.clientName || "—"}</td>
-                                              <td className="px-3 py-2">
-                                                <span className={`px-1.5 py-0.5 rounded border text-xs ${statusBadgeClass(cip.cipStatus ?? "")}`}>
-                                                  {cip.cipStatus || "—"}
-                                                </span>
-                                              </td>
-                                              <td className="px-3 py-2 text-gray-500 whitespace-nowrap">
-                                                {cip.submissionDate
-                                                  ? new Date(cip.submissionDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" })
-                                                  : "—"}
-                                              </td>
-                                              <td className="px-3 py-2">
-                                                {cip.emergencyFlag && <span className="text-red-400">⚡</span>}
-                                              </td>
-                                            </tr>
-                                          ))}
-                                        </tbody>
-                                      </table>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <p className="text-xs text-gray-600 italic">No CIP incidents linked to this TFS item.</p>
-                                )}
+                                {tfs.linkedCips.length > 0
+                                  ? <LinkedIncidentsBox cips={tfs.linkedCips} />
+                                  : <p className="text-xs text-gray-700 italic">No linked CIP incidents</p>
+                                }
                               </div>
                             )}
                           </div>
