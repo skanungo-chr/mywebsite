@@ -42,13 +42,7 @@ const TFS_FIELDS = [
   "System.AssignedTo", "System.CreatedDate", "System.ChangedDate",
   "Microsoft.VSTS.Build.FoundIn", "Microsoft.VSTS.Build.IntegrationBuild",
   "System.Tags", "System.AreaPath", "System.IterationPath",
-  "Custom.ReportedVersion",
-  // Incident ID — try all known variants
-  "Custom.IncidentID", "Custom.IncidentId", "Custom.SupportIncidentId",
-  "Custom.IncidentNumber", "Microsoft.VSTS.Common.IncidentId",
-  // Client / version fields visible in TFS Support Information
-  "Custom.Client", "Custom.ClientName", "Custom.SupportClient",
-  "Custom.IncludedInVersions", "Custom.IncludedinVersions",
+  "Custom.ReportedVersion", "Custom.IncidentID",
 ].join(",");
 
 
@@ -95,9 +89,9 @@ function mapWorkItem(raw: Record<string, unknown>): TFSWorkItem | null {
     foundInBuild:    String(f["Microsoft.VSTS.Build.FoundIn"]          ?? ""),
     fixedInBuild:    String(f["Microsoft.VSTS.Build.IntegrationBuild"] ?? ""),
     reportedVersion: String(f["Custom.ReportedVersion"]                ?? ""),
-    incidentId:      String(f["Custom.IncidentID"] || f["Custom.IncidentId"] || f["Custom.SupportIncidentId"] || f["Custom.IncidentNumber"] || f["Microsoft.VSTS.Common.IncidentId"] || ""),
-    clientFromTFS:   String(f["Custom.Client"] || f["Custom.ClientName"] || f["Custom.SupportClient"] || ""),
-    includedInVersions: String(f["Custom.IncludedInVersions"] || f["Custom.IncludedinVersions"] || ""),
+    incidentId:         String(f["Custom.IncidentID"] ?? ""),
+    clientFromTFS:      "",
+    includedInVersions: "",
     createdDate:  f["System.CreatedDate"] ? String(f["System.CreatedDate"]) : null,
     changedDate:  f["System.ChangedDate"] ? String(f["System.ChangedDate"]) : null,
     areaPath:     String(f["System.AreaPath"]      ?? ""),
