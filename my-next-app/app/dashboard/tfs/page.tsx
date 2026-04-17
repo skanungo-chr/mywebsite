@@ -7,19 +7,20 @@ import { CIPRecord } from "@/lib/cip";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface TFSWorkItem {
-  id:           number;
-  title:        string;
-  status:       string;
-  type:         string;
-  assignedTo:   string;
-  foundInBuild: string;
-  fixedInBuild: string;
-  createdDate:  string | null;
-  changedDate:  string | null;
-  areaPath:     string;
-  iteration:    string;
-  tags:         string;
-  tfsUrl:       string;
+  id:              number;
+  title:           string;
+  status:          string;
+  type:            string;
+  assignedTo:      string;
+  foundInBuild:    string;
+  fixedInBuild:    string;
+  reportedVersion: string;
+  createdDate:     string | null;
+  changedDate:     string | null;
+  areaPath:        string;
+  iteration:       string;
+  tags:            string;
+  tfsUrl:          string;
 }
 
 type ErrorCode = "NO_PAT" | "INVALID_PAT" | "NETWORK" | "CORS" | "METHOD_NOT_ALLOWED" | "OTHER" | null;
@@ -38,6 +39,7 @@ const TFS_FIELDS = [
   "System.AssignedTo", "System.CreatedDate", "System.ChangedDate",
   "Microsoft.VSTS.Build.FoundIn", "Microsoft.VSTS.Build.IntegrationBuild",
   "System.Tags", "System.AreaPath", "System.IterationPath",
+  "Custom.ReportedVersion",
 ].join(",");
 
 
@@ -81,8 +83,9 @@ function mapWorkItem(raw: Record<string, unknown>): TFSWorkItem | null {
     status:       String(f["System.State"]                          ?? ""),
     type:         String(f["System.WorkItemType"]                   ?? ""),
     assignedTo,
-    foundInBuild: String(f["Microsoft.VSTS.Build.FoundIn"]          ?? ""),
-    fixedInBuild: String(f["Microsoft.VSTS.Build.IntegrationBuild"] ?? ""),
+    foundInBuild:    String(f["Microsoft.VSTS.Build.FoundIn"]          ?? ""),
+    fixedInBuild:    String(f["Microsoft.VSTS.Build.IntegrationBuild"] ?? ""),
+    reportedVersion: String(f["Custom.ReportedVersion"]                ?? ""),
     createdDate:  f["System.CreatedDate"] ? String(f["System.CreatedDate"]) : null,
     changedDate:  f["System.ChangedDate"] ? String(f["System.ChangedDate"]) : null,
     areaPath:     String(f["System.AreaPath"]      ?? ""),
@@ -334,8 +337,8 @@ function buildVersionGroups(tfsItems: TFSWorkItem[], cipMap: Record<number, CIPR
   const excluded = new Set(["test case", "task", "time tracking"]);
   for (const item of tfsItems) {
     if (excluded.has(item.type.toLowerCase())) continue;
-    const build = item.fixedInBuild?.trim();
-    if (!build) continue; // skip items with no Fixed In Build
+    const build = item.reportedVersion?.trim();
+    if (!build) continue; // skip items with no Reported Version
     if (!byBuild[build]) byBuild[build] = { buildName: build, tfsItems: [], totalTFSItems: 0, totalIncidents: 0 };
     const linkedCips = (cipMap[item.id] ?? []).filter(c => !String(c.chrTicketNumbers ?? "").toUpperCase().startsWith("CHR-"));
     byBuild[build].tfsItems.push({ ...item, linkedCips });
