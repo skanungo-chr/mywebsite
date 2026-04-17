@@ -40,7 +40,6 @@ const TFS_FIELDS = [
   "System.Tags", "System.AreaPath", "System.IterationPath",
 ].join(",");
 
-const MAX_REPORTING_ITEMS = 2000;
 
 // ─── Date range ───────────────────────────────────────────────────────────────
 
@@ -153,7 +152,6 @@ async function fetchAllTFSData(months: DateRangeMonths, cipIds: number[]): Promi
   items: TFSWorkItem[];
   usedFallback: boolean;
   fallbackReason: string;
-  capped: boolean;
 }> {
   const pat = getActivePAT();
   if (!pat) throw Object.assign(new Error("NO_PAT"), { code: "NO_PAT" });
@@ -175,7 +173,7 @@ async function fetchAllTFSData(months: DateRangeMonths, cipIds: number[]): Promi
         const extra = await fetchTFSItemsByIds(missing, auth);
         for (const item of extra) byId.set(item.id, item);
       }
-      return { items: [...byId.values()], usedFallback: false, fallbackReason: "", capped: rangeItems.length >= MAX_REPORTING_ITEMS };
+      return { items: [...byId.values()], usedFallback: false, fallbackReason: "" };
     } catch (err) {
       const e = err as Error & { code?: string };
       if (e.code === "INVALID_PAT" || e.code === "METHOD_NOT_ALLOWED") throw err;
@@ -185,7 +183,7 @@ async function fetchAllTFSData(months: DateRangeMonths, cipIds: number[]): Promi
 
   // All strategies failed — fall back to CIP-linked IDs only
   const fallbackItems = await fetchTFSItemsByIds(cipIds, auth);
-  return { items: fallbackItems, usedFallback: true, fallbackReason: errors.join(" | "), capped: false };
+  return { items: fallbackItems, usedFallback: true, fallbackReason: errors.join(" | ") };
 }
 
 // ─── CIP helpers ──────────────────────────────────────────────────────────────
@@ -526,7 +524,6 @@ function VersionSummary({ tfsItems, cipMap }: { tfsItems: TFSWorkItem[]; cipMap:
             {filtered.map(group => {
               const isOpen = !!expandedBuilds[group.buildName];
               const isNotAssigned = group.buildName === "Not Assigned";
-              const incidentDisplay = isNotAssigned ? "—" : `${group.totalIncidents} incidents`;
 
               return (
                 <div key={group.buildName}>
@@ -768,7 +765,6 @@ export default function TFSRecordsPage() {
   const [justRefreshed, setJustRefreshed] = useState(false);
   const [usedFallback, setUsedFallback]   = useState(false);
   const [fallbackReason, setFallbackReason] = useState("");
-  const [capped, setCapped]               = useState(false);
   const [dateRange, setDateRange]         = useState<DateRangeMonths>(0);
   const [activeTab, setActiveTab]         = useState<"items" | "incidents">("items");
 
@@ -791,14 +787,12 @@ export default function TFSRecordsPage() {
     setErrorCode(null);
     setUsedFallback(false);
     setFallbackReason("");
-    setCapped(false);
 
     try {
-      const { items, usedFallback: fb, fallbackReason: fr, capped: cp } = await fetchAllTFSData(months, cipIds);
+      const { items, usedFallback: fb, fallbackReason: fr } = await fetchAllTFSData(months, cipIds);
       setTfsItems(items);
       setUsedFallback(fb);
       setFallbackReason(fr);
-      setCapped(cp);
       setLastUpdated(new Date());
     } catch (e) {
       const err = e as Error & { code?: string };
@@ -1005,13 +999,6 @@ export default function TFSRecordsPage() {
           {fallbackReason && (
             <p className="text-xs text-blue-500/80 font-mono break-all">{fallbackReason}</p>
           )}
-        </div>
-      )}
-      {capped && !tfsError && (
-        <div className="mb-4 px-4 py-3 rounded-xl bg-amber-900/20 border border-amber-700/40">
-          <p className="text-xs text-amber-400">
-            Showing first {MAX_REPORTING_ITEMS} work items. Select a shorter date range to see more specific results.
-          </p>
         </div>
       )}
 
