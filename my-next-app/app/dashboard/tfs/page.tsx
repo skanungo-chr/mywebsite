@@ -119,112 +119,34 @@ async function fetchTFSItemsByIds(ids: number[], auth: string): Promise<TFSWorkI
   return all;
 }
 
-// ─── Strategy 1: Reporting API ────────────────────────────────────────────────
-// Collection-level GET endpoint — requires CORS on /{collection}/_apis/ path.
-// Falls through if CORS blocks it.
+// ─── Strategy 1: WIQL POST (primary — full date-range query) ─────────────────
 
-async function fetchViaReportingAPI(months: DateRangeMonths, auth: string): Promise<TFSWorkItem[]> {
-  const fromDate = months > 0
-    ? (() => { const d = new Date(); d.setMonth(d.getMonth() - months); return d.toISOString().slice(0, 19) + "Z"; })()
-    : "2020-01-01T00:00:00Z";
+async function fetchViaWIQL(months: DateRangeMonths, auth: string): Promise<TFSWorkItem[]> {
+  const dateClause = months > 0
+    ? (() => { const d = new Date(); d.setMonth(d.getMonth() - months); return ` AND [System.ChangedDate] >= '${d.toISOString().slice(0, 10)}'`; })()
+    : "";
 
-  const baseUrls = [
-    `${TFS_URL}/${TFS_COLLECTION}/_apis/wit/reporting/workitems`,
-    `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/reporting/workitems`,
-  ];
+  const wiqlUrl = `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/wiql?api-version=${TFS_API_VER}`;
+  const wiql = { query: `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '${TFS_PROJECT}'${dateClause} ORDER BY [System.ChangedDate] DESC` };
 
-  let lastError = "";
-  for (const baseUrl of baseUrls) {
-    try {
-      const items: TFSWorkItem[] = [];
-      let token: string | null = null;
-      let isLast = false;
-      do {
-        const params = new URLSearchParams({ startDateTime: fromDate, project: TFS_PROJECT, fields: TFS_FIELDS, "api-version": "2.0" });
-        if (token) params.set("continuationToken", token);
-        const res = await fetch(`${baseUrl}?${params}`, { method: "GET", headers: { Authorization: auth, Accept: "application/json" } });
-        if (res.status === 401 || res.status === 403) throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
-        if (res.status === 405) throw Object.assign(new Error("TFS_METHOD_NOT_ALLOWED"), { code: "METHOD_NOT_ALLOWED" });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json() as { values?: Record<string, unknown>[]; isLastBatch?: boolean; continuationToken?: string; nextLink?: string };
-        for (const v of data.values ?? []) { const i = mapWorkItem(v); if (i) items.push(i); }
-        isLast = data.isLastBatch ?? true;
-        token = data.continuationToken ?? null;
-        if (!token && data.nextLink) { const m = data.nextLink.match(/continuationToken=([^&]+)/i); token = m ? decodeURIComponent(m[1]) : null; }
-        if (items.length >= MAX_REPORTING_ITEMS) return items;
-      } while (!isLast && token);
-      return items;
-    } catch (err) {
-      const e = err as Error & { code?: string };
-      if (e.code === "INVALID_PAT" || e.code === "METHOD_NOT_ALLOWED") throw err;
-      lastError = e.message;
-    }
-  }
-  throw new Error(`Reporting API: ${lastError}`);
-}
+  const res = await fetch(wiqlUrl, {
+    method: "POST",
+    headers: { Authorization: auth, "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(wiql),
+  });
+  if (res.status === 401 || res.status === 403) throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
+  if (res.status === 405) throw Object.assign(new Error("TFS_METHOD_NOT_ALLOWED"), { code: "METHOD_NOT_ALLOWED" });
+  if (!res.ok) { const t = await res.text().catch(() => ""); throw new Error(`WIQL ${res.status}: ${t.slice(0, 150)}`); }
 
-// ─── Strategy 2: Saved WIQL query via GET ────────────────────────────────────
-// GET /{collection}/{project}/_apis/wit/queries/Shared Queries?$depth=3
-// → find flat-list queries → run via GET /_apis/wit/wiql/{id}
-// Same project-level path as workitems → CORS already allows it.
-
-interface TFSQueryNode { id: string; name: string; queryType?: string; isFolder?: boolean; hasChildren?: boolean; children?: TFSQueryNode[] }
-
-function collectFlatQueries(node: TFSQueryNode): TFSQueryNode[] {
-  const results: TFSQueryNode[] = [];
-  if (!node.isFolder && node.queryType === "flat") results.push(node);
-  for (const child of node.children ?? []) results.push(...collectFlatQueries(child));
-  return results;
-}
-
-async function fetchViaSharedQuery(months: DateRangeMonths, auth: string): Promise<TFSWorkItem[]> {
-  // Step 1 — list all queries (root level, returns My Queries + Shared Queries tree)
-  const qUrl =
-    `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/queries` +
-    `?$depth=2&$expand=minimal&api-version=${TFS_API_VER}`;
-  const qRes = await fetch(qUrl, { method: "GET", headers: { Authorization: auth, Accept: "application/json" } });
-  if (qRes.status === 401 || qRes.status === 403) throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
-  if (!qRes.ok) throw new Error(`Queries list HTTP ${qRes.status}`);
-
-  const qData = await qRes.json() as { value?: TFSQueryNode[] };
-  // Root returns { value: [ {name:"My Queries",...}, {name:"Shared Queries",...} ] }
-  const allNodes: TFSQueryNode[] = [];
-  for (const root of qData.value ?? []) allNodes.push(...collectFlatQueries(root));
-  const flatQueries = allNodes;
-  if (flatQueries.length === 0) throw new Error("No flat-list shared queries found in TFS");
-
-  // Step 2 — run each flat query via GET until one returns items
-  const cutoff = months > 0 ? (() => { const d = new Date(); d.setMonth(d.getMonth() - months); return d; })() : null;
-  let lastErr = "";
-
-  for (const query of flatQueries) {
-    try {
-      const wUrl =
-        `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/wiql/${query.id}` +
-        `?$top=${MAX_REPORTING_ITEMS}&api-version=${TFS_API_VER}`;
-      const wRes = await fetch(wUrl, { method: "GET", headers: { Authorization: auth, Accept: "application/json" } });
-      if (wRes.status === 401 || wRes.status === 403) throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
-      if (!wRes.ok) { lastErr = `wiql HTTP ${wRes.status}`; continue; }
-      const wData = await wRes.json() as { workItems?: { id: number }[] };
-      const ids = (wData.workItems ?? []).map(w => w.id);
-      if (ids.length === 0) continue;
-
-      const items = await fetchTFSItemsByIds(ids, auth);
-      // Client-side date filter
-      return cutoff ? items.filter(i => !i.changedDate || new Date(i.changedDate) >= cutoff) : items;
-    } catch (err) {
-      const e = err as Error & { code?: string };
-      if (e.code === "INVALID_PAT") throw err;
-      lastErr = e.message;
-    }
-  }
-  throw new Error(`Saved queries failed: ${lastErr}`);
+  const data = await res.json() as { workItems?: { id: number }[] };
+  const ids = (data.workItems ?? []).map(w => w.id);
+  if (ids.length === 0) return [];
+  return fetchTFSItemsByIds(ids, auth);
 }
 
 // ─── Combined fetch strategy ──────────────────────────────────────────────────
-// 1. Reporting API   (GET, date-range native)
-// 2. Shared WIQL query via GET  (project-level, CORS safe)
-// 3. CIP-linked IDs fallback (always works)
+// 1. WIQL POST  (full date-range, now that POST is enabled on the server)
+// 2. CIP-linked IDs fallback (if WIQL still blocked)
 // CIP-linked IDs are always merged into whichever strategy succeeds.
 
 async function fetchAllTFSData(months: DateRangeMonths, cipIds: number[]): Promise<{
@@ -238,8 +160,7 @@ async function fetchAllTFSData(months: DateRangeMonths, cipIds: number[]): Promi
   const auth = buildAuthHeader(pat);
 
   const strategies: Array<{ name: string; fn: () => Promise<TFSWorkItem[]> }> = [
-    { name: "Reporting API", fn: () => fetchViaReportingAPI(months, auth) },
-    { name: "Saved Query",   fn: () => fetchViaSharedQuery(months, auth) },
+    { name: "WIQL", fn: () => fetchViaWIQL(months, auth) },
   ];
 
   const errors: string[] = [];
