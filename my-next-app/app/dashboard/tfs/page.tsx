@@ -843,15 +843,17 @@ export default function TFSRecordsPage() {
   // ── Derived data ───────────────────────────────────────────────────────────
   const cipMap = useMemo(() => {
     const map = buildCipMap(cipRecords);
-    // Also match via TFS Custom.IncidentID → CIP record id (e.g. "INC-279374")
-    const cipById: Record<string, CIPRecord> = {};
-    for (const c of cipRecords) cipById[c.id] = c;
+    // Also match via TFS Custom.IncidentID → CIP records whose chrTicketNumbers contains that ID
     for (const item of tfsItems) {
       if (!item.incidentId) continue;
-      const cip = cipById[item.incidentId];
-      if (!cip) continue;
+      const matching = cipRecords.filter(c =>
+        String(c.chrTicketNumbers ?? "").includes(item.incidentId)
+      );
+      if (matching.length === 0) continue;
       if (!map[item.id]) map[item.id] = [];
-      if (!map[item.id].some(c => c.id === cip.id)) map[item.id].push(cip);
+      for (const cip of matching) {
+        if (!map[item.id].some(c => c.id === cip.id)) map[item.id].push(cip);
+      }
     }
     return map;
   }, [cipRecords, tfsItems]);
