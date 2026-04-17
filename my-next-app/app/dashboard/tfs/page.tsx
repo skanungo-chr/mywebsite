@@ -754,7 +754,7 @@ export default function TFSRecordsPage() {
   const [usedFallback, setUsedFallback]   = useState(false);
   const [fallbackReason, setFallbackReason] = useState("");
   const [capped, setCapped]               = useState(false);
-  const [dateRange, setDateRange]         = useState<DateRangeMonths>(3);
+  const [dateRange, setDateRange]         = useState<DateRangeMonths>(0);
   const [activeTab, setActiveTab]         = useState<"items" | "incidents">("items");
 
   // Filters (Work Items tab)
