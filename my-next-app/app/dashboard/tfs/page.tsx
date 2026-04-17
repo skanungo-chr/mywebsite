@@ -455,13 +455,22 @@ function exportVersionSummaryCSV(groups: BuildGroup[]) {
 }
 
 function VersionSummary({ tfsItems, cipMap }: { tfsItems: TFSWorkItem[]; cipMap: Record<number, CIPRecord[]> }) {
-  const [open, setOpen]                     = useState(false);
+  const [open, setOpen]                     = useState(true);
   const [expandedBuilds, setExpandedBuilds] = useState<Record<string, boolean>>({});
   const [expandedTFS, setExpandedTFS]       = useState<Record<number, boolean>>({});
   const [search, setSearch]                 = useState("");
   const [buildFilter, setBuildFilter]       = useState("All");
 
   const groups = useMemo(() => buildVersionGroups(tfsItems, cipMap), [tfsItems, cipMap]);
+
+  // Auto-expand the first build group when data loads
+  const prevFirstBuild = useRef<string | null>(null);
+  useEffect(() => {
+    if (groups.length > 0 && groups[0].buildName !== prevFirstBuild.current) {
+      prevFirstBuild.current = groups[0].buildName;
+      setExpandedBuilds(prev => ({ ...prev, [groups[0].buildName]: true }));
+    }
+  }, [groups]);
 
   const filtered = useMemo(() => {
     let g = groups;
