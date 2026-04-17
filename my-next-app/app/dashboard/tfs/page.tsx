@@ -331,7 +331,9 @@ interface BuildGroup {
 
 function buildVersionGroups(tfsItems: TFSWorkItem[], cipMap: Record<number, CIPRecord[]>): BuildGroup[] {
   const byBuild: Record<string, BuildGroup> = {};
+  const excluded = new Set(["test case", "task", "time tracking"]);
   for (const item of tfsItems) {
+    if (excluded.has(item.type.toLowerCase())) continue;
     const build = item.fixedInBuild?.trim();
     if (!build) continue; // skip items with no Fixed In Build
     if (!byBuild[build]) byBuild[build] = { buildName: build, tfsItems: [], totalTFSItems: 0, totalIncidents: 0 };
@@ -848,10 +850,13 @@ export default function TFSRecordsPage() {
     return ["All", ...[...set].sort()];
   }, [tfsItems]);
 
+  const EXCLUDED_TYPES = new Set(["test case", "task", "time tracking"]);
+
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     return tfsItems
       .filter(item => {
+        if (EXCLUDED_TYPES.has(item.type.toLowerCase())) return false;
         if (q && !String(item.id).includes(q) && !item.title.toLowerCase().includes(q) &&
             !item.areaPath.toLowerCase().includes(q) && !item.tags.toLowerCase().includes(q)) return false;
         if (selectedType   !== "All" && item.type          !== selectedType)   return false;
