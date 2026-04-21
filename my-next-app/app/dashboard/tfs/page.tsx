@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { fetchCIPRecordsOnce } from "@/lib/firestore";
 import { CIPRecord } from "@/lib/cip";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -368,6 +369,89 @@ function PATOverridePanel({ onSaved }: { onSaved: () => void }) {
         )}
       </div>
     </details>
+  );
+}
+
+// ─── TFS Overview Chart ───────────────────────────────────────────────────────
+
+function shortenVersion(name: string) {
+  return name.replace(/Update\s*/gi, "U").replace(/\s+/g, " ").trim();
+}
+
+function TFSOverviewChart({ tfsItems, cipMap }: { tfsItems: TFSWorkItem[]; cipMap: Record<number, CIPRecord[]> }) {
+  const [view, setView] = useState<"version" | "product">("version");
+
+  const excluded = new Set(["test case", "task", "time tracking", "qa time tracking"]);
+
+  const versionData = useMemo(() => {
+    const byVersion: Record<string, { tfsItems: number; incidents: number }> = {};
+    for (const item of tfsItems) {
+      if (excluded.has(item.type.toLowerCase())) continue;
+      const v = item.reportedVersion?.trim() || "Unassigned";
+      if (!byVersion[v]) byVersion[v] = { tfsItems: 0, incidents: 0 };
+      byVersion[v].tfsItems++;
+      const cips = (cipMap[item.id] ?? []).filter(c => !String(c.chrTicketNumbers ?? "").toUpperCase().startsWith("CHR-"));
+      byVersion[v].incidents += cips.length > 0 ? cips.length : (item.incidentId ? 1 : 0);
+    }
+    return Object.entries(byVersion)
+      .map(([name, d]) => ({ name: shortenVersion(name), fullName: name, tfsItems: d.tfsItems, incidents: d.incidents }))
+      .sort((a, b) => b.tfsItems - a.tfsItems)
+      .slice(0, 15);
+  }, [tfsItems, cipMap]);
+
+  const productData = useMemo(() => {
+    const byProduct: Record<string, { tfsItems: number; incidents: number }> = {};
+    for (const item of tfsItems) {
+      if (excluded.has(item.type.toLowerCase())) continue;
+      const segments = item.areaPath?.split("\\") ?? [];
+      const product = segments[1]?.trim() || segments[0]?.trim() || "Unknown";
+      if (!byProduct[product]) byProduct[product] = { tfsItems: 0, incidents: 0 };
+      byProduct[product].tfsItems++;
+      const cips = (cipMap[item.id] ?? []).filter(c => !String(c.chrTicketNumbers ?? "").toUpperCase().startsWith("CHR-"));
+      byProduct[product].incidents += cips.length > 0 ? cips.length : (item.incidentId ? 1 : 0);
+    }
+    return Object.entries(byProduct)
+      .map(([name, d]) => ({ name: name.length > 18 ? name.slice(0, 16) + "…" : name, fullName: name, tfsItems: d.tfsItems, incidents: d.incidents }))
+      .sort((a, b) => b.tfsItems - a.tfsItems)
+      .slice(0, 15);
+  }, [tfsItems, cipMap]);
+
+  const data = view === "version" ? versionData : productData;
+  if (tfsItems.length === 0) return null;
+
+  return (
+    <div className="mb-6 bg-[#111827] border border-gray-800 rounded-2xl overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-800">
+        <p className="text-sm font-semibold text-white">TFS Overview</p>
+        <div className="flex gap-1 bg-gray-800/60 rounded-lg p-1">
+          {(["version", "product"] as const).map(v => (
+            <button key={v} onClick={() => setView(v)}
+              className={`text-xs px-3 py-1.5 rounded-md transition-colors font-medium ${view === v ? "bg-indigo-600 text-white" : "text-gray-400 hover:text-gray-200"}`}>
+              {v === "version" ? "By Version" : "By Product"}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="px-2 py-4">
+        <ResponsiveContainer width="100%" height={300}>
+          <BarChart data={data} margin={{ top: 5, right: 20, left: 0, bottom: 60 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" vertical={false} />
+            <XAxis dataKey="name" tick={{ fill: "#9ca3af", fontSize: 11 }} angle={-35} textAnchor="end" interval={0} />
+            <YAxis tick={{ fill: "#6b7280", fontSize: 11 }} axisLine={false} tickLine={false} />
+            <Tooltip
+              contentStyle={{ backgroundColor: "#1f2937", border: "1px solid #374151", borderRadius: "8px", fontSize: "12px" }}
+              labelStyle={{ color: "#e5e7eb", fontWeight: 600 }}
+              itemStyle={{ color: "#d1d5db" }}
+              formatter={(value, name) => [value, name === "tfsItems" ? "TFS Items" : "Incidents"]}
+            />
+            <Legend wrapperStyle={{ fontSize: "12px", color: "#9ca3af", paddingTop: "8px" }}
+              formatter={(v) => v === "tfsItems" ? "TFS Items" : "Incidents"} />
+            <Bar dataKey="tfsItems" fill="#6366f1" radius={[3, 3, 0, 0]} maxBarSize={40} />
+            <Bar dataKey="incidents" fill="#22c55e" radius={[3, 3, 0, 0]} maxBarSize={40} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
   );
 }
 
@@ -1209,6 +1293,11 @@ export default function TFSRecordsPage() {
           {/* ── Work Items Tab ──────────────────────────────────────────────── */}
           {activeTab === "items" && (
             <>
+              {/* Overview Chart */}
+              {!loading && tfsItems.length > 0 && (
+                <TFSOverviewChart tfsItems={tfsItems} cipMap={cipMap} />
+              )}
+
               {/* Version Summary */}
               {!loading && tfsItems.length > 0 && (
                 <VersionSummary tfsItems={tfsItems} cipMap={cipMap} />
