@@ -127,21 +127,29 @@ async function fetchTFSItemsByIds(ids: number[], auth: string): Promise<TFSWorkI
   return all;
 }
 
-// ─── Strategy 1: WIQL POST (primary — full date-range query) ─────────────────
+// ─── Strategy 1: WIQL POST, fallback to GET with $wiql param ─────────────────
 
 async function fetchViaWIQL(months: DateRangeMonths, auth: string): Promise<TFSWorkItem[]> {
   const dateClause = months > 0
     ? (() => { const d = new Date(); d.setMonth(d.getMonth() - months); return ` AND [System.ChangedDate] >= '${d.toISOString().slice(0, 10)}'`; })()
     : "";
+  const query = `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '${TFS_PROJECT}'${dateClause} ORDER BY [System.ChangedDate] DESC`;
+  const baseWiqlUrl = `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/wiql?api-version=${TFS_API_VER}`;
 
-  const wiqlUrl = `${TFS_URL}/${TFS_COLLECTION}/${TFS_PROJECT}/_apis/wit/wiql?api-version=${TFS_API_VER}`;
-  const wiql = { query: `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = '${TFS_PROJECT}'${dateClause} ORDER BY [System.ChangedDate] DESC` };
+  // Try POST first (no preflight issue when IIS CORS is properly configured)
+  let res: Response;
+  try {
+    res = await fetch(baseWiqlUrl, {
+      method: "POST",
+      headers: { Authorization: auth, "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ query }),
+    });
+  } catch {
+    // POST failed (network/CORS preflight) — try GET with query param
+    const getUrl = `${baseWiqlUrl}&wiql=${encodeURIComponent(query)}`;
+    res = await fetch(getUrl, { method: "GET", headers: { Authorization: auth, Accept: "application/json" } });
+  }
 
-  const res = await fetch(wiqlUrl, {
-    method: "POST",
-    headers: { Authorization: auth, "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify(wiql),
-  });
   if (res.status === 401 || res.status === 403) throw Object.assign(new Error("INVALID_PAT"), { code: "INVALID_PAT" });
   if (res.status === 405) throw Object.assign(new Error("TFS_METHOD_NOT_ALLOWED"), { code: "METHOD_NOT_ALLOWED" });
   if (!res.ok) { const t = await res.text().catch(() => ""); throw new Error(`WIQL ${res.status}: ${t.slice(0, 150)}`); }
@@ -374,7 +382,7 @@ interface BuildGroup {
 
 function buildVersionGroups(tfsItems: TFSWorkItem[], cipMap: Record<number, CIPRecord[]>): BuildGroup[] {
   const byBuild: Record<string, BuildGroup> = {};
-  const excluded = new Set(["test case", "task", "time tracking"]);
+  const excluded = new Set(["test case", "task", "time tracking", "qa time tracking"]);
   for (const item of tfsItems) {
     if (excluded.has(item.type.toLowerCase())) continue;
     const build = item.reportedVersion?.trim();
@@ -931,7 +939,7 @@ export default function TFSRecordsPage() {
     return ["All", ...[...set].sort()];
   }, [tfsItems]);
 
-  const EXCLUDED_TYPES = new Set(["test case", "task", "time tracking"]);
+  const EXCLUDED_TYPES = new Set(["test case", "task", "time tracking", "qa time tracking"]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
@@ -1078,12 +1086,12 @@ export default function TFSRecordsPage() {
 
       {/* Status notices */}
       {usedFallback && !tfsError && (
-        <div className="mb-4 px-4 py-3 rounded-xl bg-blue-900/20 border border-blue-700/40">
-          <p className="text-xs text-blue-300 font-medium mb-1">
-            Showing CIP-linked records only — Reporting API unavailable. Date range not applied.
+        <div className="mb-4 px-4 py-3 rounded-xl bg-amber-900/20 border border-amber-700/40">
+          <p className="text-xs text-amber-300 font-medium mb-1">
+            ⚠ WIQL query failed — showing CIP-linked records only. Check VPN connection or TFS server availability.
           </p>
           {fallbackReason && (
-            <p className="text-xs text-blue-500/80 font-mono break-all">{fallbackReason}</p>
+            <p className="text-xs text-amber-600/80 font-mono break-all">{fallbackReason}</p>
           )}
         </div>
       )}
